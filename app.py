@@ -56,21 +56,6 @@ def get_client() -> openai.OpenAI | None:
     return openai.OpenAI(api_key=api_key)
 
 
-def demo_card() -> CardInfo:
-    return CardInfo(
-        player_name="Patrick Mahomes",
-        card_number="15",
-        card_set="2017 Panini Prizm Football",
-        sport="Football",
-        is_rookie_card=True,
-        is_autographed=False,
-        is_graded=False,
-        serial_number=None,
-        parallel="Silver Prizm",
-        condition="Near mint. Sharp corners, no creases. Light surface wear visible under direct light.",
-        extra_notes=None,
-    )
-
 # ---------------------------------------------------------------------------
 # Render helpers
 # ---------------------------------------------------------------------------
@@ -287,16 +272,6 @@ def build_text_output(validated, card: CardInfo) -> str:
 
 def render_sidebar() -> CardInfo | str | None:
     st.sidebar.title("🃏 Card Details")
-
-    with st.sidebar.expander("🎯 Load demo card", expanded=False):
-        if st.button("Patrick Mahomes 2017 Prizm RC", use_container_width=True):
-            card = demo_card()
-            for k, v in card.model_dump().items():
-                st.session_state[f"field_{k}"] = v
-            st.session_state["input_mode"] = "Manual entry"
-            st.rerun()
-
-    st.sidebar.divider()
 
     mode = st.sidebar.radio(
         "Input mode",
