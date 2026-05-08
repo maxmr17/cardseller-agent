@@ -19,25 +19,28 @@ Cross-reference multiple sources. Report what you find factually and flag any un
 
 PARSE_SYSTEM_PROMPT = """Extract structured CardInfo fields from the research summary provided. Be precise — use the exact confirmed values from the research, not assumptions. If a field was not confirmed in the research, use the most reasonable inference from context."""
 
-IMAGE_SYSTEM_PROMPT = """You are a sports card image hunter. Your only job is to find a working, embeddable image URL of the exact card described.
+IMAGE_SYSTEM_PROMPT = """You are a sports card image hunter. Find a real photo of the EXACT card described — not a generic card image, not a placeholder, not the wrong parallel or wrong player.
 
-Search strategy — try these in order until you find one:
-1. Google Images: search "{player} {year} {set} {card number} {parallel} card"
-2. eBay active/sold listings for this exact card — eBay listing images are direct CDN URLs
-3. COMC.com product page for this card
-4. SportscardsPro.com
-5. Beckett.com card database
-6. Any other sports card marketplace
+Step 1 — Search eBay for an active or recently sold listing of this specific card.
+  - Use the exact player name, year, set, card number, and parallel in your search.
+  - Open an actual eBay listing that matches.
+  - The main listing photo will have a CDN URL like: https://i.ebayimg.com/images/g/XXXXX/s-l500.jpg
+  - Return that URL.
 
-Rules for a valid URL:
-- Must be a direct image file URL (ends in .jpg, .jpeg, .png, .webp, or contains /image/ or /photo/ in the path)
-- Must actually show THIS specific card (correct player, set, parallel)
-- Must be publicly accessible (no login required)
-- eBay image CDN URLs look like: https://i.ebayimg.com/images/g/...
-- COMC image URLs look like: https://www.comc.com/...
+Step 2 — If no eBay listing found, try COMC.com for this card's product page image.
+
+Step 3 — If COMC fails, try SportscardsPro.com or 130point.com sold listings.
+
+Step 4 — If all else fails, search Google Images for: "{player} {year} {set} {card number} {parallel}" and return the most specific result.
+
+REJECT any URL that:
+- Is a generic card back or placeholder image
+- Shows a different player, set, or parallel
+- Is a site logo, banner, or thumbnail icon
+- Comes from a site that requires login to view the image
 
 Return ONLY the raw image URL on a single line — no explanation, no markdown, no quotes.
-If after exhausting all sources you truly cannot find one, return: NO_IMAGE_FOUND"""
+If you cannot find a real photo of this specific card after trying all sources, return: NO_IMAGE_FOUND"""
 
 
 def research_card(query: str, client: openai.OpenAI) -> tuple[CardInfo, str]:
@@ -79,7 +82,8 @@ def _is_likely_image_url(url: str) -> bool:
     return direct_ext or image_path
 
 
-def _attempt_image_search(query: str, client: openai.OpenAI) -> str | None:
+def _attempt_image_search(card: CardInfo, query: str, client: openai.OpenAI) -> str | None:
+    """Run one image search attempt and verify the result is the correct card."""
     response = client.responses.create(
         model="gpt-4o",
         instructions=IMAGE_SYSTEM_PROMPT,
@@ -87,19 +91,38 @@ def _attempt_image_search(query: str, client: openai.OpenAI) -> str | None:
         tools=[{"type": "web_search_preview"}],
     )
     url = response.output_text.strip().split("\n")[0].strip()
-    if url and url != "NO_IMAGE_FOUND" and url.startswith("http") and _is_likely_image_url(url):
-        return url
-    # If not a direct image URL but looks like a valid HTTP URL, still return it
-    # — Streamlit can sometimes render page-embedded images
-    if url and url != "NO_IMAGE_FOUND" and url.startswith("http"):
+
+    if not url or url == "NO_IMAGE_FOUND" or not url.startswith("http"):
+        return None
+
+    # Verify the model believes this URL is the correct card
+    verify = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"I am about to display this image URL to a user selling a sports card:\n"
+                    f"URL: {url}\n\n"
+                    f"The card is: {card.player_name} — {card.card_set} #{card.card_number}"
+                    f"{f' ({card.parallel})' if card.parallel else ''}\n\n"
+                    f"Based on the URL structure and domain alone, does this look like a real photo "
+                    f"of a specific sports card listing (not a generic placeholder, logo, or wrong card)?\n"
+                    f"Reply with only YES or NO."
+                ),
+            }
+        ],
+    )
+    verdict = (verify.choices[0].message.content or "").strip().upper()
+    if verdict.startswith("YES"):
         return url
     return None
 
 
 def search_card_image(card: CardInfo, client: openai.OpenAI) -> str | None:
     """
-    Search multiple sources for a card image.
-    Tries up to 3 progressively broader queries before giving up.
+    Search multiple sources for a card image with verification.
+    Tries up to 3 progressively targeted queries before giving up.
     """
     console.print("[bold blue]🖼  Searching for card image...[/bold blue]")
 
@@ -108,20 +131,27 @@ def search_card_image(card: CardInfo, client: openai.OpenAI) -> str | None:
         base += f" {card.parallel}"
 
     queries = [
-        f"Find a direct image URL of this sports card from eBay, Google Images, or COMC: {base}",
-        f"Search Google Images and eBay listings for a photo of this card and return the image URL: {card.player_name} {card.card_set} {card.parallel or ''} card #{card.card_number}",
-        f"Find any clear photo of this sports card — try Beckett, PSA, SportscardsPro, or any card marketplace: {card.player_name} {card.card_set}",
+        (
+            f"Search eBay for an active or sold listing of this exact card and return the listing's main photo URL: {base}. "
+            f"The URL should start with https://i.ebayimg.com/"
+        ),
+        (
+            f"Search COMC.com or SportscardsPro.com for this card and return the product image URL: {base}"
+        ),
+        (
+            f"Search Google Images for a clear front-facing photo of this sports card and return the image URL: {base}"
+        ),
     ]
 
     for i, query in enumerate(queries, 1):
         try:
             console.print(f"[dim]  Image search attempt {i}/3...[/dim]")
-            url = _attempt_image_search(query, client)
+            url = _attempt_image_search(card, query, client)
             if url:
                 console.print(f"[green]✓ Card image found on attempt {i}[/green]")
                 return url
         except Exception as e:
             console.print(f"[yellow]  Attempt {i} failed: {e}[/yellow]")
 
-    console.print("[yellow]⚠ No card image found after 3 attempts[/yellow]")
+    console.print("[yellow]⚠ No verified card image found after 3 attempts[/yellow]")
     return None
