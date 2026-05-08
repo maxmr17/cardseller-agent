@@ -14,7 +14,6 @@ from agents import (
     validate_and_refine,
     parse_card_text,
     research_card,
-    search_card_image,
     authenticate_card,
     fetch_market_sales,
     validate_listing_price,
@@ -61,7 +60,7 @@ def get_client() -> openai.OpenAI | None:
 # Render helpers
 # ---------------------------------------------------------------------------
 
-def render_auth_panel(card: CardInfo, report, image_url: str | None) -> None:
+def render_auth_panel(card: CardInfo, report) -> None:
     score = report.confidence_score
     is_auth = report.is_authentic
     verdict_color = "#28a745" if (is_auth and score >= 8) else "#ffc107" if score >= 6 else "#dc3545"
@@ -70,22 +69,7 @@ def render_auth_panel(card: CardInfo, report, image_url: str | None) -> None:
 
     st.markdown("### 🔐 Card Identity & Authentication")
 
-    img_col, id_col, auth_col = st.columns([1, 2, 1])
-
-    with img_col:
-        if image_url:
-            try:
-                st.image(image_url, caption=f"{card.player_name} — {card.card_set}", use_container_width=True)
-            except Exception:
-                # Fallback: show as a clickable link if Streamlit can't render it directly
-                st.markdown(f"[View card image]({image_url})", unsafe_allow_html=False)
-        else:
-            st.markdown(
-                "<div style='height:160px;background:#f0f0f0;border-radius:8px;"
-                "display:flex;align-items:center;justify-content:center;"
-                "color:#aaa;font-size:0.85rem'>No image found</div>",
-                unsafe_allow_html=True,
-            )
+    id_col, auth_col = st.columns([3, 1])
 
     with id_col:
         st.markdown("**Confirmed Card Details**")
@@ -122,9 +106,19 @@ def render_auth_panel(card: CardInfo, report, image_url: str | None) -> None:
         st.warning("**Red flags:** " + " · ".join(report.red_flags))
 
     with st.expander("Authentication details & sources", expanded=False):
-        st.write(report.authentication_notes)
+        # Split notes into bullet points on newlines or sentences
+        notes = report.authentication_notes.strip()
+        bullets = [line.strip("•- ").strip() for line in notes.splitlines() if line.strip()]
+        if len(bullets) <= 1:
+            # Single block — split on ". " to make bullets
+            bullets = [s.strip() for s in notes.replace(". ", ".\n").splitlines() if s.strip()]
+        for b in bullets:
+            if b:
+                st.markdown(f"- {b}")
         if report.sources_consulted:
-            st.caption("Sources: " + ", ".join(report.sources_consulted))
+            st.markdown("**Sources consulted:**")
+            for src in report.sources_consulted:
+                st.markdown(f"- {src}")
 
 
 def render_listing(listing, label: str, is_refined: bool = False) -> None:
@@ -167,8 +161,8 @@ def render_listing(listing, label: str, is_refined: bool = False) -> None:
 
     col_l, col_r = st.columns([2, 1])
     with col_l:
-        with st.expander("📄 Description", expanded=True):
-            st.text(listing.description)
+        st.markdown("**📄 Description** — copy and paste directly into eBay")
+        st.code(listing.description, language=None)
     with col_r:
         st.markdown("**Condition**")
         st.markdown(f"Grade: `{listing.condition_grade}`")
@@ -400,7 +394,7 @@ def main() -> None:
     # ── Phase 1: Research + Auth (triggered by form submit) ──────────────────
     if raw is not None:
         for key in ("auth_report", "result_card", "result", "card_confirmed",
-                    "market_report", "price_verdict", "card_image_url", "style_approval"):
+                    "market_report", "price_verdict", "style_approval"):
             st.session_state.pop(key, None)
 
         with st.status("🔎 Researching card details…", expanded=True) as s:
@@ -411,9 +405,6 @@ def main() -> None:
             st.write("Searching the web to confirm card identity…")
             card, research_summary = research_card(query, client)
 
-            st.write("Searching for card image…")
-            image_url = search_card_image(card, client)
-
             s.update(label="🔐 Authenticating card identity…", state="running")
             st.write("Running PSA-style authentication checks…")
             auth_report = authenticate_card(card, research_summary, client)
@@ -421,7 +412,6 @@ def main() -> None:
 
         st.session_state["auth_report"] = auth_report
         st.session_state["result_card"] = card
-        st.session_state["card_image_url"] = image_url
         st.rerun()
 
     # ── Show auth panel + confirmation gate ──────────────────────────────────
@@ -429,7 +419,6 @@ def main() -> None:
         render_auth_panel(
             st.session_state["result_card"],
             st.session_state["auth_report"],
-            st.session_state.get("card_image_url"),
         )
 
         if not st.session_state.get("card_confirmed"):
@@ -440,7 +429,7 @@ def main() -> None:
                 st.rerun()
             if col_no.button("❌ No — start over", use_container_width=True):
                 for key in ("auth_report", "result_card", "card_confirmed",
-                            "market_report", "price_verdict", "card_image_url", "style_approval"):
+                            "market_report", "price_verdict", "style_approval"):
                     st.session_state.pop(key, None)
                 st.rerun()
             st.stop()
@@ -484,12 +473,18 @@ def main() -> None:
             )
 
             s.update(label="👤 maxmr17 reviewing style…", state="running")
-            st.write("maxmr17 checking every section against their exact format…")
-            style_approval = maxmr17_approve(
-                card, validated.refined_listing, client,
-                market_context=market_context,
-            )
-            s.update(label="✅ Listing ready — maxmr17 signed off", state="complete")
+            current_listing = validated.refined_listing
+            style_approval = None
+            for attempt in range(1, 5):  # up to 4 passes
+                st.write(f"maxmr17 style pass {attempt}/4…")
+                style_approval = maxmr17_approve(
+                    card, current_listing, client,
+                    market_context=market_context,
+                )
+                if style_approval.style_score >= 10:
+                    break
+                current_listing = style_approval.final_listing
+            s.update(label=f"✅ Listing ready — maxmr17 style {style_approval.style_score}/10", state="complete")
 
         st.session_state["result"] = validated
         st.session_state["style_approval"] = style_approval
@@ -502,7 +497,6 @@ def main() -> None:
         render_auth_panel(
             st.session_state["result_card"],
             st.session_state["auth_report"],
-            st.session_state.get("card_image_url"),
         )
         st.divider()
 
