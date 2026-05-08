@@ -14,10 +14,8 @@ from agents import (
     generate_listing,
     validate_and_refine,
     parse_card_text,
-    research_card,
-    authenticate_card,
+    research_and_authenticate,
     fetch_market_sales,
-    validate_listing_price,
     maxmr17_approve,
 )
 from models import CardInfo
@@ -168,11 +166,9 @@ def render_auth_panel(card: CardInfo, report) -> None:
         st.warning("**Red flags:** " + " · ".join(report.red_flags))
 
     with st.expander("Authentication details & sources", expanded=False):
-        # Split notes into bullet points on newlines or sentences
         notes = report.authentication_notes.strip()
         bullets = [line.strip("•- ").strip() for line in notes.splitlines() if line.strip()]
         if len(bullets) <= 1:
-            # Single block — split on ". " to make bullets
             bullets = [s.strip() for s in notes.replace(". ", ".\n").splitlines() if s.strip()]
         for b in bullets:
             if b:
@@ -290,13 +286,13 @@ def render_market_tab(market_report, price_verdict: str) -> None:
         import pandas as pd
         rows = [
             {
-                "Date": s.sale_date,
-                "Price": f"${s.price:,.2f}",
-                "Condition": s.condition,
-                "Platform": s.platform,
-                "Notes": s.details,
+                "Date": sale.sale_date,
+                "Price": f"${sale.price:,.2f}",
+                "Condition": sale.condition,
+                "Platform": sale.platform,
+                "Notes": sale.details,
             }
-            for s in market_report.sales
+            for sale in market_report.sales
         ]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
@@ -458,31 +454,25 @@ def main() -> None:
     # ── Phase 1: Research + Auth (triggered by form submit) ──────────────────
     if raw is not None:
         for key in ("auth_report", "result_card", "result", "card_confirmed",
-                    "market_report", "price_verdict", "style_approval"):
+                    "market_report", "style_approval"):
             st.session_state.pop(key, None)
 
         p1 = PipelineProgress([
-            ("Searching the web for card details", 22),
-            ("Authenticating card identity",       14),
+            ("Researching & authenticating card identity", 30),
         ])
 
-        with st.status("🔎 Researching card details…", expanded=True) as s:
+        with st.status("🔎 Researching card details…", expanded=True) as status:
             query = raw if isinstance(raw, str) else (
                 f"{raw.player_name} {raw.card_set} #{raw.card_number}"
                 + (f" {raw.parallel}" if raw.parallel else "")
             )
-            st.write("Searching the web to confirm card identity…")
-            card, research_summary = research_card(query, client)
-            p1.advance()
-
-            s.update(label="🔐 Authenticating card identity…", state="running")
-            st.write("Running PSA-style authentication checks…")
-            auth_report = authenticate_card(card, research_summary, client)
+            st.write("Searching the web and running authentication checks…")
+            result = research_and_authenticate(query, client)
             p1.complete()
-            s.update(label="✅ Card identified — please confirm below", state="complete")
+            status.update(label="✅ Card identified — please confirm below", state="complete")
 
-        st.session_state["auth_report"] = auth_report
-        st.session_state["result_card"] = card
+        st.session_state["auth_report"] = result.auth
+        st.session_state["result_card"] = result.card
         st.rerun()
 
     # ── Show auth panel + confirmation gate ──────────────────────────────────
@@ -500,7 +490,7 @@ def main() -> None:
                 st.rerun()
             if col_no.button("❌ No — start over", use_container_width=True):
                 for key in ("auth_report", "result_card", "card_confirmed",
-                            "market_report", "price_verdict", "style_approval"):
+                            "market_report", "style_approval"):
                     st.session_state.pop(key, None)
                 st.rerun()
             st.stop()
@@ -512,7 +502,6 @@ def main() -> None:
         p2 = PipelineProgress([
             ("Fetching market data",            20),
             ("Generating listing",              15),
-            ("Validating listing price",         5),
             ("Refining listing",               20),
             ("maxmr17 style review — pass 1",  15),
             ("maxmr17 style review — pass 2",  15),
@@ -520,7 +509,7 @@ def main() -> None:
             ("maxmr17 style review — pass 4",  15),
         ])
 
-        with st.status("📊 Fetching market data…", expanded=True) as s:
+        with st.status("📊 Fetching market data…", expanded=True) as status:
             st.write("Searching eBay sold, SportscardsPro, SportscardsInvestor…")
             try:
                 market_report = fetch_market_sales(card, client)
@@ -529,27 +518,24 @@ def main() -> None:
                     f"Range: ${market_report.low_price:.2f}–${market_report.high_price:.2f} | "
                     f"Trend: {market_report.price_trend}\n"
                     + "\n".join(
-                        f"- {s.sale_date}: ${s.price:.2f} ({s.condition}) on {s.platform}"
-                        for s in market_report.sales[:5]
+                        f"- {sale.sale_date}: ${sale.price:.2f} ({sale.condition}) on {sale.platform}"
+                        for sale in market_report.sales[:5]
                     )
                 )
+                # pricing_verdict comes directly from the market report — no extra LLM call needed
+                price_verdict = market_report.pricing_verdict
             except Exception:
                 market_report = None
                 market_context = ""
+                price_verdict = ""
             p2.advance()
 
-            s.update(label="⚡ Generating listing…", state="running")
+            status.update(label="⚡ Generating listing…", state="running")
             st.write("Crafting optimised draft with market data…")
             draft = generate_listing(card, client, market_context=market_context)
             p2.advance()
 
-            if market_report:
-                price_verdict = validate_listing_price(card, draft, market_report, client)
-            else:
-                price_verdict = ""
-            p2.advance()
-
-            s.update(label="🔍 Validator refining to perfection…", state="running")
+            status.update(label="🔍 Validator refining to perfection…", state="running")
             st.write("Scrutinising every element — aiming for 10/10…")
             validated = validate_and_refine(
                 card, draft, client,
@@ -558,7 +544,7 @@ def main() -> None:
             )
             p2.advance()
 
-            s.update(label="👤 maxmr17 reviewing style…", state="running")
+            status.update(label="👤 maxmr17 reviewing style…", state="running")
             current_listing = validated.refined_listing
             style_approval = None
             for attempt in range(1, 5):  # up to 4 passes
@@ -573,7 +559,10 @@ def main() -> None:
                 current_listing = style_approval.final_listing
 
             p2.complete()
-            s.update(label=f"✅ Listing ready — maxmr17 style {style_approval.style_score}/10", state="complete")
+            status.update(
+                label=f"✅ Listing ready — maxmr17 style {style_approval.style_score}/10",
+                state="complete",
+            )
 
         st.session_state["result"] = validated
         st.session_state["style_approval"] = style_approval
@@ -594,7 +583,6 @@ def main() -> None:
         style_approval = st.session_state.get("style_approval")
         card = st.session_state["result_card"]
 
-        # The final listing is maxmr17's signed-off version (or validator refined if no approval yet)
         final_listing = style_approval.final_listing if style_approval else validated.refined_listing
 
         score = validated.confidence_score

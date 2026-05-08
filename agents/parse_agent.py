@@ -1,4 +1,6 @@
 import openai
+
+from agents.utils import MODEL_FAST, with_retry
 from models.card_listing import CardInfo
 
 PARSE_SYSTEM_PROMPT = """You are a sports card identification expert. Given a free-text string describing a sports card, extract all structured information from it and return a CardInfo object.
@@ -10,8 +12,9 @@ Make reasonable inferences where possible (e.g. if the set is "2017 Panini Prizm
 
 def parse_card_text(text: str, client: openai.OpenAI) -> CardInfo:
     """Use the LLM to parse a free-text card description into a structured CardInfo."""
-    response = client.beta.chat.completions.parse(
-        model="gpt-4o",
+    response = with_retry(
+        client.beta.chat.completions.parse,
+        model=MODEL_FAST,
         messages=[
             {"role": "system", "content": PARSE_SYSTEM_PROMPT},
             {"role": "user", "content": f"Parse this card description into structured data:\n\n{text}"},

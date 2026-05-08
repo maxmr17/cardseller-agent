@@ -126,6 +126,12 @@ class ValidatedListing(BaseModel):
     )
 
 
+class ResearchOutput(BaseModel):
+    """Combined output from the research + authentication step (one parse call instead of two)."""
+    card: CardInfo
+    auth: AuthenticationReport
+
+
 class StyleApproval(BaseModel):
     approved: bool = Field(
         description="True if the listing authentically matches maxmr17's style without major issues. False if significant rewrites were required."

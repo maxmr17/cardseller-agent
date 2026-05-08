@@ -1,8 +1,7 @@
 import openai
-from rich.console import Console
-from models.card_listing import CardInfo, CardListing, StyleApproval
 
-console = Console()
+from agents.utils import MODEL_SMART, console, listing_to_text, with_retry
+from models.card_listing import CardInfo, CardListing, StyleApproval
 
 MAXMR17_SYSTEM_PROMPT = """You ARE maxmr17 — a real eBay sports card seller who has been selling for years with a very specific, consistent listing style. You are reviewing an AI-generated listing to decide whether it sounds like something YOU would actually post.
 
@@ -95,37 +94,35 @@ def maxmr17_approve(
     """Run the maxmr17 style agent. Returns a StyleApproval with the final signed-off listing."""
     console.print("\n[bold magenta]👤 maxmr17 reviewing listing...[/bold magenta]")
 
-    from agents.validator_agent import _listing_to_text
-    listing_text = _listing_to_text(listing)
-
+    listing_text = listing_to_text(listing)
     market_section = f"\n\nRECENT MARKET DATA:\n{market_context}" if market_context else ""
 
-    user_message = f"""Review this listing. Does it match YOUR exact style — the way YOU post cards on eBay?
-
-CARD: {card.player_name} | {card.card_set} #{card.card_number} | Sport: {card.sport}
-Rookie: {card.is_rookie_card} | Graded: {card.is_graded}{f' ({card.grade})' if card.grade else ''}{f' | Parallel: {card.parallel}' if card.parallel else ''}{f' | Serial: {card.serial_number}' if card.serial_number else ''}{market_section}
-
-LISTING TO REVIEW:
-{listing_text}
-
-Go through your checklist:
-- Title: right emojis? right keyword order? under 80 chars?
-- Hook line: specific to THIS card or generic filler?
-- Card identity para: bold player + card ID + finish?
-- Why it matters: hobby vocabulary? collector + investor framing?
-- Condition line: "Fresh pull, immediately sleeved and top-loaded — ..."?
-- Emoji fact block: all fields? bold labels? correct sport emoji?
-- Perfect for: header present? 4–5 bullets?
-- Keywords: pipe-separated at the very end?
-- Any emojis in body paragraphs? (should be zero)
-
-Provide your verdict and the final_listing you'd actually post."""
-
-    response = client.beta.chat.completions.parse(
-        model="gpt-4o",
+    response = with_retry(
+        client.beta.chat.completions.parse,
+        model=MODEL_SMART,
         messages=[
             {"role": "system", "content": MAXMR17_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": (
+                f"Review this listing. Does it match YOUR exact style — the way YOU post cards on eBay?\n\n"
+                f"CARD: {card.player_name} | {card.card_set} #{card.card_number} | Sport: {card.sport}\n"
+                f"Rookie: {card.is_rookie_card} | Graded: {card.is_graded}"
+                f"{f' ({card.grade})' if card.grade else ''}"
+                f"{f' | Parallel: {card.parallel}' if card.parallel else ''}"
+                f"{f' | Serial: {card.serial_number}' if card.serial_number else ''}"
+                f"{market_section}\n\n"
+                f"LISTING TO REVIEW:\n{listing_text}\n\n"
+                f"Go through your checklist:\n"
+                f"- Title: right emojis? right keyword order? under 80 chars?\n"
+                f"- Hook line: specific to THIS card or generic filler?\n"
+                f"- Card identity para: bold player + card ID + finish?\n"
+                f"- Why it matters: hobby vocabulary? collector + investor framing?\n"
+                f"- Condition line: \"Fresh pull, immediately sleeved and top-loaded — ...\"?\n"
+                f"- Emoji fact block: all fields? bold labels? correct sport emoji?\n"
+                f"- Perfect for: header present? 4–5 bullets?\n"
+                f"- Keywords: pipe-separated at the very end?\n"
+                f"- Any emojis in body paragraphs? (should be zero)\n\n"
+                f"Provide your verdict and the final_listing you'd actually post."
+            )},
         ],
         response_format=StyleApproval,
     )

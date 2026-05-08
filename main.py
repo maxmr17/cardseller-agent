@@ -20,7 +20,13 @@ from rich.rule import Rule
 from rich.table import Table
 from rich import box
 
-from agents import generate_listing, validate_and_refine
+from agents import (
+    generate_listing,
+    validate_and_refine,
+    research_and_authenticate,
+    fetch_market_sales,
+    maxmr17_approve,
+)
 from models import CardInfo
 
 load_dotenv()
@@ -54,77 +60,42 @@ def yn_prompt(label: str, default: bool = False) -> bool:
     return value in ("y", "yes")
 
 
-def collect_card_info() -> CardInfo:
+def collect_card_query() -> str:
+    """Collect a free-text card description from the user."""
     console.print(Panel("[bold]Enter Card Details[/bold]", border_style="blue"))
-
-    player_name = prompt("Player name")
-    while not player_name:
-        console.print("[red]Player name is required.[/red]")
-        player_name = prompt("Player name")
-
-    card_set = prompt("Card set (e.g. 2023 Panini Prizm Football)")
-    while not card_set:
-        console.print("[red]Card set is required.[/red]")
-        card_set = prompt("Card set")
-
-    card_number = prompt("Card number (e.g. #/99, BASE, #123)")
-    while not card_number:
-        console.print("[red]Card number is required.[/red]")
-        card_number = prompt("Card number")
-
-    sport = prompt("Sport", default="Football")
-    is_rookie = yn_prompt("Rookie card (RC)?", default=False)
-    is_auto = yn_prompt("Autographed?", default=False)
-
-    is_graded = yn_prompt("Professionally graded?", default=False)
-    grade = None
-    if is_graded:
-        grade = prompt("Grade (e.g. PSA 10, BGS 9.5, SGC 10)")
-
-    serial = prompt("Serial number (leave blank if not numbered)") or None
-    parallel = prompt("Parallel/variant (e.g. Silver Prizm, Gold Refractor — leave blank if base)") or None
-    condition = prompt("Condition notes (leave blank to skip)") or None
-    extra_notes = prompt("Any other details (leave blank to skip)") or None
-
-    return CardInfo(
-        player_name=player_name,
-        card_number=card_number,
-        card_set=card_set,
-        sport=sport,
-        is_rookie_card=is_rookie,
-        is_autographed=is_auto,
-        is_graded=is_graded,
-        grade=grade,
-        serial_number=serial,
-        parallel=parallel,
-        condition=condition,
-        extra_notes=extra_notes,
-    )
+    console.print("[dim]Describe the card — player, set, year, parallel, grade, etc. The AI will confirm every detail.[/dim]\n")
+    query = console.input("[bold]Card description:[/bold] ").strip()
+    while not query:
+        console.print("[red]Card description is required.[/red]")
+        query = console.input("[bold]Card description:[/bold] ").strip()
+    return query
 
 
-def demo_card() -> CardInfo:
-    """A realistic demo card for testing."""
-    return CardInfo(
-        player_name="Patrick Mahomes",
-        card_number="15",
-        card_set="2017 Panini Prizm Football",
-        sport="Football",
-        is_rookie_card=True,
-        is_autographed=False,
-        is_graded=False,
-        serial_number=None,
-        parallel="Silver Prizm",
-        condition="Near mint. Sharp corners, no creases. Light surface wear visible under direct light.",
-        extra_notes=None,
-    )
+def demo_query() -> str:
+    return "Patrick Mahomes 2017 Panini Prizm Silver Prizm RC #15"
 
 
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
 
+def display_auth_report(report) -> None:
+    status = "[green]✅ Authenticated[/green]" if report.is_authentic else "[red]❌ Could Not Authenticate[/red]"
+    console.print(Panel(
+        f"[bold]Player:[/bold] {report.confirmed_player}\n"
+        f"[bold]Set:[/bold] {report.confirmed_set}\n"
+        f"[bold]Card #:[/bold] {report.confirmed_card_number}\n"
+        f"[bold]Parallel:[/bold] {report.confirmed_parallel or 'Base'}\n"
+        f"[bold]Rookie:[/bold] {'Yes' if report.is_rookie_card else 'No'}\n"
+        f"[bold]Verdict:[/bold] {status}\n"
+        + (f"\n[bold]Red flags:[/bold] {' · '.join(report.red_flags)}" if report.red_flags else ""),
+        title="[bold blue]Card Authentication[/bold blue]",
+        border_style="blue",
+        padding=(1, 2),
+    ))
+
+
 def display_listing(title: str, listing, border_color: str = "cyan") -> None:
-    """Print a CardListing in a formatted panel."""
     pricing = listing.pricing
     strategy_str = pricing.strategy.value.replace("_", " ").title()
 
@@ -139,26 +110,18 @@ def display_listing(title: str, listing, border_color: str = "cyan") -> None:
     title_len = len(listing.title)
     title_color = "green" if title_len <= 80 else "red"
 
-    content = f"""[bold]TITLE[/bold] ([{title_color}]{title_len}/80 chars[/{title_color}]):
-{listing.title}
-
-[bold]SUBTITLE:[/bold]
-{listing.subtitle}
-
-[bold]CONDITION:[/bold] {listing.condition_grade}
-{listing.condition_description}
-
-[bold]PRICING:[/bold]
-{chr(10).join(price_lines)}
-
-[bold]DESCRIPTION:[/bold]
-{listing.description}
-
-[bold]KEYWORDS:[/bold] {', '.join(listing.search_keywords)}"""
+    content = (
+        f"[bold]TITLE[/bold] ([{title_color}]{title_len}/80 chars[/{title_color}]):\n"
+        f"{listing.title}\n\n"
+        f"[bold]SUBTITLE:[/bold]\n{listing.subtitle}\n\n"
+        f"[bold]CONDITION:[/bold] {listing.condition_grade}\n{listing.condition_description}\n\n"
+        f"[bold]PRICING:[/bold]\n{chr(10).join(price_lines)}\n\n"
+        f"[bold]DESCRIPTION:[/bold]\n{listing.description}\n\n"
+        f"[bold]KEYWORDS:[/bold] {', '.join(listing.search_keywords)}"
+    )
 
     console.print(Panel(content, title=f"[bold]{title}[/bold]", border_style=border_color, padding=(1, 2)))
 
-    # Item specifics table
     if listing.item_specifics:
         table = Table(title="Item Specifics", box=box.SIMPLE, show_header=True)
         table.add_column("Field", style="bold")
@@ -168,8 +131,20 @@ def display_listing(title: str, listing, border_color: str = "cyan") -> None:
         console.print(table)
 
 
+def display_market_summary(report) -> None:
+    console.print(Panel(
+        f"[bold]Avg:[/bold] ${report.avg_price:.2f} | "
+        f"[bold]Range:[/bold] ${report.low_price:.2f}–${report.high_price:.2f} | "
+        f"[bold]Trend:[/bold] {report.price_trend}\n\n"
+        f"{report.market_summary}\n\n"
+        f"[bold]Pricing verdict:[/bold] {report.pricing_verdict}",
+        title="[bold green]Market Data[/bold green]",
+        border_style="green",
+        padding=(1, 2),
+    ))
+
+
 def display_validation_summary(validated) -> None:
-    """Display the validator's notes and confidence score."""
     score = validated.confidence_score
     score_color = "green" if score >= 8 else "yellow" if score >= 6 else "red"
 
@@ -183,9 +158,7 @@ def display_validation_summary(validated) -> None:
     ))
 
 
-def save_listing(validated, card: CardInfo, output_path: str) -> None:
-    """Save the final listing to a plain-text file."""
-    listing = validated.refined_listing
+def save_listing(listing, validated, card: CardInfo, output_path: str) -> None:
     pricing = listing.pricing
 
     lines = [
@@ -198,7 +171,7 @@ def save_listing(validated, card: CardInfo, output_path: str) -> None:
         f"TITLE ({len(listing.title)}/80 chars):",
         listing.title,
         "",
-        f"SUBTITLE:",
+        "SUBTITLE:",
         listing.subtitle,
         "",
         "CONDITION:",
@@ -217,10 +190,7 @@ def save_listing(validated, card: CardInfo, output_path: str) -> None:
         f"  Rationale: {pricing.pricing_rationale}",
         "",
         "ITEM SPECIFICS:",
-    ]
-    for s in listing.item_specifics:
-        lines.append(f"  {s.key}: {s.value}")
-    lines += [
+        *[f"  {s.key}: {s.value}" for s in listing.item_specifics],
         "",
         "DESCRIPTION:",
         listing.description,
@@ -242,25 +212,72 @@ def save_listing(validated, card: CardInfo, output_path: str) -> None:
 # Main workflow
 # ---------------------------------------------------------------------------
 
-def run(card: CardInfo, client: openai.OpenAI, output_path: str | None = None) -> None:
+def run(query: str, client: openai.OpenAI, output_path: str | None = None) -> None:
     console.print(Rule("[bold blue]cardseller-agent[/bold blue]"))
+
+    # Step 1: Research + authenticate (2 API calls)
+    research_result = research_and_authenticate(query, client)
+    card = research_result.card
+    auth = research_result.auth
+
     console.print(f"\n[bold]Card:[/bold] {card.player_name} — {card.card_set} #{card.card_number}\n")
+    display_auth_report(auth)
 
-    # Step 1: Generate draft listing
-    draft_listing = generate_listing(card, client)
+    if not auth.is_authentic:
+        console.print("[yellow]⚠ Authentication concerns found — review red flags above before listing.[/yellow]")
 
-    console.print(Rule("[dim]Draft Listing (before validation)[/dim]"))
-    display_listing("Draft", draft_listing, border_color="dim")
+    # Step 2: Market data
+    console.print(Rule("[dim]Market Research[/dim]"))
+    try:
+        market_report = fetch_market_sales(card, client)
+        display_market_summary(market_report)
+        market_context = (
+            f"Recent sales avg: ${market_report.avg_price:.2f} | "
+            f"Range: ${market_report.low_price:.2f}–${market_report.high_price:.2f} | "
+            f"Trend: {market_report.price_trend}\n"
+            + "\n".join(
+                f"- {sale.sale_date}: ${sale.price:.2f} ({sale.condition}) on {sale.platform}"
+                for sale in market_report.sales[:5]
+            )
+        )
+        price_verdict = market_report.pricing_verdict
+    except Exception as e:
+        console.print(f"[yellow]⚠ Market data unavailable: {e}[/yellow]")
+        market_report = None
+        market_context = ""
+        price_verdict = ""
 
-    # Step 2: Validate and refine
-    validated = validate_and_refine(card, draft_listing, client)
+    # Step 3: Generate draft
+    console.print(Rule("[dim]Draft Listing[/dim]"))
+    draft = generate_listing(card, client, market_context=market_context)
+    display_listing("Draft", draft, border_color="dim")
 
-    console.print(Rule("[bold]Final Listing[/bold]"))
-    display_listing("Refined Listing ✓", validated.refined_listing, border_color="green")
+    # Step 4: Validate + refine
+    validated = validate_and_refine(
+        card, draft, client,
+        market_context=market_context,
+        price_verdict=price_verdict,
+    )
     display_validation_summary(validated)
 
+    # Step 5: maxmr17 style loop (up to 4 passes)
+    console.print(Rule("[bold]maxmr17 Style Review[/bold]"))
+    current_listing = validated.refined_listing
+    style_approval = None
+    for attempt in range(1, 5):
+        console.print(f"[magenta]Pass {attempt}/4…[/magenta]")
+        style_approval = maxmr17_approve(card, current_listing, client, market_context=market_context)
+        if style_approval.style_score >= 10:
+            break
+        current_listing = style_approval.final_listing
+
+    final_listing = style_approval.final_listing if style_approval else validated.refined_listing
+
+    console.print(Rule("[bold]Final Listing[/bold]"))
+    display_listing("maxmr17-Approved Listing ✓", final_listing, border_color="green")
+
     if output_path:
-        save_listing(validated, card, output_path)
+        save_listing(final_listing, validated, card, output_path)
 
 
 def main() -> None:
@@ -272,15 +289,12 @@ def main() -> None:
     client = get_client()
 
     if args.demo:
-        card = demo_card()
-        console.print(Panel(
-            f"[bold]Demo card:[/bold] {card.player_name} | {card.card_set} | {card.parallel}",
-            border_style="dim",
-        ))
+        query = demo_query()
+        console.print(Panel(f"[bold]Demo card:[/bold] {query}", border_style="dim"))
     else:
-        card = collect_card_info()
+        query = collect_card_query()
 
-    run(card, client, output_path=args.output)
+    run(query, client, output_path=args.output)
 
 
 if __name__ == "__main__":

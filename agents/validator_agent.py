@@ -1,8 +1,7 @@
 import openai
-from rich.console import Console
-from models.card_listing import CardInfo, CardListing, ValidatedListing
 
-console = Console()
+from agents.utils import MODEL_SMART, console, listing_to_text, with_retry
+from models.card_listing import CardInfo, CardListing, ValidatedListing
 
 VALIDATOR_SYSTEM_PROMPT = """You are a senior eBay sports card listing specialist. Your job is to review and refine listings to ensure they perfectly match the maxmr17 style — the exact format and voice of that specific seller.
 
@@ -36,37 +35,6 @@ SEPARATOR — the line  ___________________________________________  must appear
 Your output is the refined listing that is ready for the maxmr17 style validator to sign off on."""
 
 
-def _listing_to_text(listing: CardListing) -> str:
-    pricing = listing.pricing
-    strategy_str = pricing.strategy.value.replace("_", " ").title()
-
-    price_parts = [f"Strategy: {strategy_str}"]
-    if pricing.starting_price:
-        price_parts.append(f"Starting Price: ${pricing.starting_price:.2f}")
-    if pricing.buy_it_now_price:
-        price_parts.append(f"Buy It Now: ${pricing.buy_it_now_price:.2f}")
-    price_parts.append(f"Best Offer: {'Yes' if pricing.allow_offers else 'No'}")
-    price_parts.append(f"Rationale: {pricing.pricing_rationale}")
-
-    specifics_text = "\n".join(f"  {s.key}: {s.value}" for s in listing.item_specifics)
-
-    return f"""TITLE ({len(listing.title)}/80 chars): {listing.title}
-SUBTITLE: {listing.subtitle}
-CONDITION GRADE: {listing.condition_grade}
-CONDITION NOTES: {listing.condition_description}
-
-PRICING:
-{chr(10).join(f'  {p}' for p in price_parts)}
-
-ITEM SPECIFICS:
-{specifics_text}
-
-SEARCH KEYWORDS: {', '.join(listing.search_keywords)}
-
-DESCRIPTION:
-{listing.description}"""
-
-
 def validate_and_refine(
     card: CardInfo,
     draft_listing: CardListing,
@@ -77,40 +45,39 @@ def validate_and_refine(
     """Run the validator agent to critique and refine a draft listing."""
     console.print("\n[bold yellow]🔍 Validator Agent running...[/bold yellow]")
 
-    listing_text = _listing_to_text(draft_listing)
+    listing_text = listing_to_text(draft_listing)
 
     market_section = f"\n\nRECENT MARKET DATA:\n{market_context}" if market_context else ""
     price_section = f"\n\nPRICE VALIDATION VERDICT:\n{price_verdict}" if price_verdict else ""
 
-    user_message = f"""Review and refine this listing against the maxmr17 format checklist. Fix every deviation.
-
-CARD:
-Player: {card.player_name} | Set: {card.card_set} | Card #: {card.card_number}
-Sport: {card.sport} | Rookie: {card.is_rookie_card} | Auto: {card.is_autographed} | Graded: {card.is_graded}{f' ({card.grade})' if card.grade else ''}{f' | Serial: {card.serial_number}' if card.serial_number else ''}{market_section}{price_section}
-
-DRAFT TO REVIEW:
-{listing_text}
-
-Check every section in order:
-1. Does the title start with correct sport/energy emojis?
-2. Is the hook line punchy and specific — not generic filler?
-3. Is the card identity paragraph bolded correctly?
-4. Does "Why it matters" use proper hobby vocabulary?
-5. Is there a visual/display sentence?
-6. Does the condition line use EXACTLY "Fresh pull, immediately sleeved and top-loaded — ..."?
-7. Is the emoji fact block complete with bold labels?
-8. Is "Perfect for:" present with 4–5 bullets?
-9. Is the separator line  ___________________________________________  present between "Perfect for:" and the keywords?
-10. Are pipe-separated search keywords immediately after the separator?
-10. Is pricing accurate to the market comps provided?
-
-Rewrite anything that fails these checks. Only assign confidence_score 9–10 if every section is correct."""
-
-    response = client.beta.chat.completions.parse(
-        model="gpt-4o",
+    response = with_retry(
+        client.beta.chat.completions.parse,
+        model=MODEL_SMART,
         messages=[
             {"role": "system", "content": VALIDATOR_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": (
+                f"Review and refine this listing against the maxmr17 format checklist. Fix every deviation.\n\n"
+                f"CARD:\n"
+                f"Player: {card.player_name} | Set: {card.card_set} | Card #: {card.card_number}\n"
+                f"Sport: {card.sport} | Rookie: {card.is_rookie_card} | Auto: {card.is_autographed} | "
+                f"Graded: {card.is_graded}{f' ({card.grade})' if card.grade else ''}"
+                f"{f' | Serial: {card.serial_number}' if card.serial_number else ''}"
+                f"{market_section}{price_section}\n\n"
+                f"DRAFT TO REVIEW:\n{listing_text}\n\n"
+                f"Check every section in order:\n"
+                f"1. Does the title start with correct sport/energy emojis?\n"
+                f"2. Is the hook line punchy and specific — not generic filler?\n"
+                f"3. Is the card identity paragraph bolded correctly?\n"
+                f"4. Does \"Why it matters\" use proper hobby vocabulary?\n"
+                f"5. Is there a visual/display sentence?\n"
+                f"6. Does the condition line use EXACTLY \"Fresh pull, immediately sleeved and top-loaded — ...\"?\n"
+                f"7. Is the emoji fact block complete with bold labels?\n"
+                f"8. Is \"Perfect for:\" present with 4–5 bullets?\n"
+                f"9. Is the separator line  ___________________________________________  present between \"Perfect for:\" and the keywords?\n"
+                f"10. Are pipe-separated search keywords immediately after the separator?\n"
+                f"11. Is pricing accurate to the market comps provided?\n\n"
+                f"Rewrite anything that fails these checks. Only assign confidence_score 9–10 if every section is correct."
+            )},
         ],
         response_format=ValidatedListing,
     )

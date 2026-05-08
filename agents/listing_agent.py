@@ -1,8 +1,7 @@
 import openai
-from rich.console import Console
-from models.card_listing import CardInfo, CardListing
 
-console = Console()
+from agents.utils import MODEL_SMART, console, with_retry
+from models.card_listing import CardInfo, CardListing
 
 LISTING_SYSTEM_PROMPT = """You generate eBay sports card listings in the EXACT style of seller maxmr17. Study and replicate the format below with precision — every section, in order, every time.
 
@@ -112,27 +111,25 @@ def generate_listing(card: CardInfo, client: openai.OpenAI, market_context: str 
     card_details = _build_card_prompt(card)
     market_section = f"\n\nRECENT MARKET DATA:\n{market_context}" if market_context else ""
 
-    user_message = f"""Generate a complete eBay listing for this sports card using the maxmr17 format EXACTLY:
-
-{card_details}{market_section}
-
-Follow every section in order:
-1. Hook line — one punchy opener specific to this card's appeal
-2. Card identity paragraph — bold player name + card ID + finish/parallel
-3. Why it matters — 2–3 sentences on set standing, player value, collector/investor appeal
-4. Visual/display sentence — specific finish description
-5. Condition line — "Fresh pull, immediately sleeved and top-loaded — [specifics]"
-6. Emoji fact block — every field, bold labels, correct sport emoji
-7. Perfect for — exactly this header, 4–5 bullets
-8. Search keywords — pipe-separated, no header, end of description
-
-Use market data to set accurate prices. Produce a listing that is indistinguishable from a real maxmr17 post."""
-
-    response = client.beta.chat.completions.parse(
-        model="gpt-4o",
+    response = with_retry(
+        client.beta.chat.completions.parse,
+        model=MODEL_SMART,
         messages=[
             {"role": "system", "content": LISTING_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": (
+                f"Generate a complete eBay listing for this sports card using the maxmr17 format EXACTLY:\n\n"
+                f"{card_details}{market_section}\n\n"
+                f"Follow every section in order:\n"
+                f"1. Hook line — one punchy opener specific to this card's appeal\n"
+                f"2. Card identity paragraph — bold player name + card ID + finish/parallel\n"
+                f"3. Why it matters — 2–3 sentences on set standing, player value, collector/investor appeal\n"
+                f"4. Visual/display sentence — specific finish description\n"
+                f"5. Condition line — \"Fresh pull, immediately sleeved and top-loaded — [specifics]\"\n"
+                f"6. Emoji fact block — every field, bold labels, correct sport emoji\n"
+                f"7. Perfect for — exactly this header, 4–5 bullets\n"
+                f"8. Search keywords — pipe-separated, no header, end of description\n\n"
+                f"Use market data to set accurate prices. Produce a listing that is indistinguishable from a real maxmr17 post."
+            )},
         ],
         response_format=CardListing,
     )
