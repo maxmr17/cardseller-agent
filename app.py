@@ -18,6 +18,7 @@ from agents import (
     authenticate_card,
     fetch_market_sales,
     validate_listing_price,
+    maxmr17_approve,
 )
 from models import CardInfo
 
@@ -179,6 +180,38 @@ def render_listing(listing, label: str, is_refined: bool = False) -> None:
     st.markdown(keywords_html, unsafe_allow_html=True)
 
 
+def render_maxmr17_panel(approval) -> None:
+    approved = approval.approved
+    score = approval.style_score
+    badge_color = "#28a745" if approved else "#e67e22"
+    badge_icon = "✅" if approved else "✏️"
+    badge_text = "Style Approved" if approved else "Style Revised"
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.markdown("### 👤 maxmr17 Style Review")
+        st.caption(approval.approval_summary)
+    with c2:
+        st.markdown(
+            f"<div style='text-align:center;padding:0.8rem;background:#f8f9fa;"
+            f"border-radius:10px;border:2px solid {badge_color}'>"
+            f"<div style='font-size:1.6rem'>{badge_icon}</div>"
+            f"<div style='font-size:0.9rem;font-weight:700;color:{badge_color}'>{badge_text}</div>"
+            f"<div style='font-size:1.6rem;font-weight:800;color:{badge_color}'>{score}/10</div>"
+            f"<div style='font-size:0.7rem;color:#666'>style score</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    col_t, col_d = st.columns(2)
+    with col_t:
+        st.markdown("**Title feedback**")
+        st.caption(approval.title_verdict)
+    with col_d:
+        st.markdown("**Description feedback**")
+        st.caption(approval.description_verdict)
+
+
 def render_market_tab(market_report, price_verdict: str) -> None:
     if market_report is None:
         st.info("Market data not available for this card.")
@@ -219,8 +252,7 @@ def render_market_tab(market_report, price_verdict: str) -> None:
         st.warning(price_verdict)
 
 
-def build_text_output(validated, card: CardInfo) -> str:
-    listing = validated.refined_listing
+def build_text_output_with_listing(listing, validated, card: CardInfo) -> str:
     pricing = listing.pricing
     lines = [
         "=" * 70,
@@ -368,7 +400,7 @@ def main() -> None:
     # ── Phase 1: Research + Auth (triggered by form submit) ──────────────────
     if raw is not None:
         for key in ("auth_report", "result_card", "result", "card_confirmed",
-                    "market_report", "price_verdict", "card_image_url"):
+                    "market_report", "price_verdict", "card_image_url", "style_approval"):
             st.session_state.pop(key, None)
 
         with st.status("🔎 Researching card details…", expanded=True) as s:
@@ -408,7 +440,7 @@ def main() -> None:
                 st.rerun()
             if col_no.button("❌ No — start over", use_container_width=True):
                 for key in ("auth_report", "result_card", "card_confirmed",
-                            "market_report", "price_verdict", "card_image_url"):
+                            "market_report", "price_verdict", "card_image_url", "style_approval"):
                     st.session_state.pop(key, None)
                 st.rerun()
             st.stop()
@@ -450,9 +482,17 @@ def main() -> None:
                 market_context=market_context,
                 price_verdict=price_verdict,
             )
-            s.update(label="✅ Listing ready", state="complete")
+
+            s.update(label="👤 maxmr17 reviewing style…", state="running")
+            st.write("maxmr17 checking every section against their exact format…")
+            style_approval = maxmr17_approve(
+                card, validated.refined_listing, client,
+                market_context=market_context,
+            )
+            s.update(label="✅ Listing ready — maxmr17 signed off", state="complete")
 
         st.session_state["result"] = validated
+        st.session_state["style_approval"] = style_approval
         st.session_state["market_report"] = market_report
         st.session_state["price_verdict"] = price_verdict
         st.rerun()
@@ -468,24 +508,32 @@ def main() -> None:
 
     if "result" in st.session_state:
         validated = st.session_state["result"]
+        style_approval = st.session_state.get("style_approval")
         card = st.session_state["result_card"]
 
+        # The final listing is maxmr17's signed-off version (or validator refined if no approval yet)
+        final_listing = style_approval.final_listing if style_approval else validated.refined_listing
+
         score = validated.confidence_score
-        m1, m2, m3 = st.columns(3)
+        style_score = style_approval.style_score if style_approval else None
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("Listing Confidence", f"{score}/10")
-        m2.metric("Title Length", f"{len(validated.refined_listing.title)}/80 chars")
-        strategy = validated.refined_listing.pricing.strategy.value.replace("_", " ").title()
+        m2.metric("Title Length", f"{len(final_listing.title)}/80 chars")
+        strategy = final_listing.pricing.strategy.value.replace("_", " ").title()
         m3.metric("Selling Strategy", strategy)
+        if style_score is not None:
+            approved_label = "✅ Approved" if style_approval.approved else "✏️ Revised"
+            m4.metric("maxmr17 Style", f"{style_score}/10 {approved_label}")
 
         st.divider()
 
-        tab_final, tab_draft, tab_market, tab_insights = st.tabs([
-            "✅ Final Listing", "📝 Draft", "📊 Market Data", "💡 Insights"
+        tab_final, tab_style, tab_draft, tab_market, tab_insights = st.tabs([
+            "✅ Final Listing", "👤 maxmr17 Review", "📝 Draft", "📊 Market Data", "💡 Insights"
         ])
 
         with tab_final:
-            render_listing(validated.refined_listing, "Refined Listing", is_refined=True)
-            text_output = build_text_output(validated, card)
+            render_listing(final_listing, "maxmr17-Approved Listing", is_refined=True)
+            text_output = build_text_output_with_listing(final_listing, validated, card)
             filename = f"{card.player_name.lower().replace(' ', '_')}_{card.card_set[:4]}_listing.txt"
             st.download_button(
                 label="⬇️ Download listing as .txt",
@@ -493,6 +541,14 @@ def main() -> None:
                 file_name=filename,
                 mime="text/plain",
             )
+
+        with tab_style:
+            if style_approval:
+                render_maxmr17_panel(style_approval)
+                if not style_approval.approved:
+                    st.info("maxmr17 revised the listing above. The **Final Listing** tab shows the corrected version.")
+            else:
+                st.info("maxmr17 style review not available for this listing.")
 
         with tab_draft:
             render_listing(validated.original_listing, "Original Draft")

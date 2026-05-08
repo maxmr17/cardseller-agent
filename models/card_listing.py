@@ -124,3 +124,25 @@ class ValidatedListing(BaseModel):
     market_insight: str = Field(
         description="Brief market insight for this card - current demand, comparable sales, what buyers look for"
     )
+
+
+class StyleApproval(BaseModel):
+    approved: bool = Field(
+        description="True if the listing authentically matches maxmr17's style without major issues. False if significant rewrites were required."
+    )
+    style_score: int = Field(
+        description="Style match score 1-10 against maxmr17's exact format. 10 = indistinguishable from a real maxmr17 listing.",
+        ge=1, le=10
+    )
+    title_verdict: str = Field(
+        description="Specific feedback on the title — emoji selection, keyword order, character efficiency"
+    )
+    description_verdict: str = Field(
+        description="Specific feedback on the description — which structural sections were missing, wrong, or off-voice"
+    )
+    final_listing: CardListing = Field(
+        description="The maxmr17-signed-off listing. Always a complete CardListing — revised to match the style perfectly if needed, or confirmed as-is if already perfect."
+    )
+    approval_summary: str = Field(
+        description="One paragraph from maxmr17's POV explaining what was changed and why, or confirming why this listing is ready to post."
+    )
