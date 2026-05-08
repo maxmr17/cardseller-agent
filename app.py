@@ -4,6 +4,7 @@ Run with:  streamlit run app.py
 """
 
 import os
+import time
 
 import openai
 import streamlit as st
@@ -43,6 +44,70 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Progress tracker
+# ---------------------------------------------------------------------------
+
+class PipelineProgress:
+    """Renders a live progress bar + ETA that updates between pipeline steps."""
+
+    def __init__(self, steps: list[tuple[str, int]]):
+        # steps = [(label, estimated_seconds), ...]
+        self.steps = steps
+        self.n = len(steps)
+        self.total_est = sum(s[1] for s in steps)
+        self._bar = st.progress(0.0)
+        self._text = st.empty()
+        self._start = time.time()
+        self._step_idx = 0
+        self._done_est = 0
+        self._render()
+
+    def advance(self):
+        """Mark the current step done and move to the next."""
+        if self._step_idx < self.n:
+            self._done_est += self.steps[self._step_idx][1]
+            self._step_idx += 1
+        self._render()
+
+    def complete(self):
+        self._bar.progress(1.0)
+        elapsed = int(time.time() - self._start)
+        self._text.markdown(
+            f"<div style='font-size:0.85rem;color:#28a745'>"
+            f"✅ &nbsp;<strong>Complete</strong> — finished in {elapsed}s"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    def _render(self):
+        elapsed = int(time.time() - self._start)
+        pct = min(self._done_est / self.total_est, 0.97) if self.total_est else 0
+        remaining = max(0, self.total_est - self._done_est)
+
+        self._bar.progress(pct)
+
+        if self._step_idx < self.n:
+            label = self.steps[self._step_idx][0]
+            mins, secs = divmod(remaining, 60)
+            eta = f"{mins}m {secs}s" if mins else f"{secs}s"
+            done_pct = int(pct * 100)
+            self._text.markdown(
+                f"<div style='font-size:0.85rem;color:#555;margin-top:2px'>"
+                f"<strong>{label}</strong>"
+                f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+                f"Step {self._step_idx + 1} of {self.n}"
+                f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+                f"{done_pct}% complete"
+                f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+                f"~{eta} remaining"
+                f"&nbsp;&nbsp;·&nbsp;&nbsp;"
+                f"{elapsed}s elapsed"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -397,6 +462,11 @@ def main() -> None:
                     "market_report", "price_verdict", "style_approval"):
             st.session_state.pop(key, None)
 
+        p1 = PipelineProgress([
+            ("Searching the web for card details", 22),
+            ("Authenticating card identity",       14),
+        ])
+
         with st.status("🔎 Researching card details…", expanded=True) as s:
             query = raw if isinstance(raw, str) else (
                 f"{raw.player_name} {raw.card_set} #{raw.card_number}"
@@ -404,10 +474,12 @@ def main() -> None:
             )
             st.write("Searching the web to confirm card identity…")
             card, research_summary = research_card(query, client)
+            p1.advance()
 
             s.update(label="🔐 Authenticating card identity…", state="running")
             st.write("Running PSA-style authentication checks…")
             auth_report = authenticate_card(card, research_summary, client)
+            p1.complete()
             s.update(label="✅ Card identified — please confirm below", state="complete")
 
         st.session_state["auth_report"] = auth_report
@@ -438,6 +510,17 @@ def main() -> None:
     if st.session_state.get("card_confirmed") and "result" not in st.session_state:
         card = st.session_state["result_card"]
 
+        p2 = PipelineProgress([
+            ("Fetching market data",            20),
+            ("Generating listing",              15),
+            ("Validating listing price",         5),
+            ("Refining listing",               20),
+            ("maxmr17 style review — pass 1",  15),
+            ("maxmr17 style review — pass 2",  15),
+            ("maxmr17 style review — pass 3",  15),
+            ("maxmr17 style review — pass 4",  15),
+        ])
+
         with st.status("📊 Fetching market data…", expanded=True) as s:
             st.write("Searching eBay sold, SportscardsPro, SportscardsInvestor…")
             try:
@@ -454,15 +537,18 @@ def main() -> None:
             except Exception:
                 market_report = None
                 market_context = ""
+            p2.advance()
 
             s.update(label="⚡ Generating listing…", state="running")
             st.write("Crafting optimised draft with market data…")
             draft = generate_listing(card, client, market_context=market_context)
+            p2.advance()
 
             if market_report:
                 price_verdict = validate_listing_price(card, draft, market_report, client)
             else:
                 price_verdict = ""
+            p2.advance()
 
             s.update(label="🔍 Validator refining to perfection…", state="running")
             st.write("Scrutinising every element — aiming for 10/10…")
@@ -471,6 +557,7 @@ def main() -> None:
                 market_context=market_context,
                 price_verdict=price_verdict,
             )
+            p2.advance()
 
             s.update(label="👤 maxmr17 reviewing style…", state="running")
             current_listing = validated.refined_listing
@@ -481,9 +568,12 @@ def main() -> None:
                     card, current_listing, client,
                     market_context=market_context,
                 )
+                p2.advance()
                 if style_approval.style_score >= 10:
                     break
                 current_listing = style_approval.final_listing
+
+            p2.complete()
             s.update(label=f"✅ Listing ready — maxmr17 style {style_approval.style_score}/10", state="complete")
 
         st.session_state["result"] = validated
