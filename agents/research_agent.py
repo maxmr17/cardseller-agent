@@ -58,7 +58,7 @@ def research_card(query: str, client: openai.OpenAI) -> tuple[CardInfo, str]:
 
 
 # ---------------------------------------------------------------------------
-# Image search — direct HTTP scrapers (primary) + AI fallback (secondary)
+# Image search
 # ---------------------------------------------------------------------------
 
 _HEADERS = {
@@ -71,176 +71,238 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Matches eBay CDN image URLs in HTML source
-_EBAY_IMG_RE = re.compile(
-    r'https://i\.ebayimg\.com/images/g/[A-Za-z0-9~_\-]+/s-l\d+\.(?:jpg|webp|png)',
-    re.IGNORECASE,
-)
 
-# Matches 130point image URLs
-_130PT_IMG_RE = re.compile(
-    r'https://[^"\'>\s]*130point[^"\'>\s]*\.(?:jpg|jpeg|png|webp)',
-    re.IGNORECASE,
-)
-
-
-def _upgrade_ebay_url(url: str) -> str:
-    """Swap eBay thumbnail size suffix for full 500px version."""
-    return re.sub(r's-l\d+', 's-l500', url)
-
-
-def _scrape_ebay(query: str) -> str | None:
-    """Search eBay and return the first listing image URL found in the HTML."""
-    try:
-        encoded = urllib.parse.quote(query)
-        # _sacat=212 = Sports Trading Cards category
-        url = f"https://www.ebay.com/sch/i.html?_nkw={encoded}&_sacat=212&LH_Sold=0"
-        r = httpx.get(url, headers=_HEADERS, timeout=15, follow_redirects=True)
-        r.raise_for_status()
-        matches = _EBAY_IMG_RE.findall(r.text)
-        # Skip the first match — it's often eBay's own logo/nav image
-        for match in matches[1:]:
-            upgraded = _upgrade_ebay_url(match)
-            console.print(f"[dim]  eBay image found: {upgraded[:80]}[/dim]")
-            return upgraded
-    except Exception as e:
-        console.print(f"[yellow]  eBay scrape failed: {e}[/yellow]")
+def _extract_og_image(html: str) -> str | None:
+    """Pull the og:image meta tag URL — always present, always a direct image URL."""
+    patterns = [
+        re.compile(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', re.IGNORECASE),
+        re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', re.IGNORECASE),
+        re.compile(r'og:image["\'][^>]*content=["\']([^"\']+)["\']', re.IGNORECASE),
+    ]
+    for pat in patterns:
+        m = pat.search(html)
+        if m:
+            url = m.group(1).strip()
+            if url.startswith("http"):
+                return url
     return None
 
 
-def _scrape_ebay_sold(query: str) -> str | None:
-    """Search eBay SOLD listings for an image."""
-    try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://www.ebay.com/sch/i.html?_nkw={encoded}&_sacat=212&LH_Sold=1&LH_Complete=1"
-        r = httpx.get(url, headers=_HEADERS, timeout=15, follow_redirects=True)
-        r.raise_for_status()
-        matches = _EBAY_IMG_RE.findall(r.text)
-        for match in matches[1:]:
-            upgraded = _upgrade_ebay_url(match)
-            console.print(f"[dim]  eBay sold image found: {upgraded[:80]}[/dim]")
-            return upgraded
-    except Exception as e:
-        console.print(f"[yellow]  eBay sold scrape failed: {e}[/yellow]")
+def _extract_data_src(html: str) -> str | None:
+    """Find lazy-loaded eBay CDN images stored in data-src attributes."""
+    pat = re.compile(
+        r'data-src=["\']([^"\']*i\.ebayimg\.com[^"\']+)["\']',
+        re.IGNORECASE,
+    )
+    for m in pat.finditer(html):
+        url = m.group(1)
+        return re.sub(r's-l\d+', 's-l500', url)
     return None
 
 
-def _scrape_130point(query: str) -> str | None:
-    """Search 130point.com (eBay sold aggregator) for a card image."""
-    try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://130point.com/sales/?search={encoded}"
-        r = httpx.get(url, headers=_HEADERS, timeout=15, follow_redirects=True)
-        r.raise_for_status()
-        # 130point embeds eBay CDN images
-        matches = _EBAY_IMG_RE.findall(r.text)
-        for match in matches:
-            upgraded = _upgrade_ebay_url(match)
-            console.print(f"[dim]  130point image found: {upgraded[:80]}[/dim]")
-            return upgraded
-        # Also try their own image URLs
-        pt_matches = _130PT_IMG_RE.findall(r.text)
-        if pt_matches:
-            return pt_matches[0]
-    except Exception as e:
-        console.print(f"[yellow]  130point scrape failed: {e}[/yellow]")
+def _extract_json_images(html: str) -> str | None:
+    """eBay embeds image URLs in JSON blobs inside <script> tags."""
+    pat = re.compile(
+        r'"(?:imageUrl|src|image|mainImage|originalImg)":\s*"(https://i\.ebayimg\.com/[^"]+)"',
+        re.IGNORECASE,
+    )
+    for m in pat.finditer(html):
+        url = m.group(1)
+        return re.sub(r's-l\d+', 's-l500', url)
     return None
 
 
-def _scrape_comc(query: str) -> str | None:
-    """Search COMC for a card image."""
+def _fetch_page(url: str) -> str | None:
+    """Fetch a URL and return the HTML text, or None on failure."""
     try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://www.comc.com/Cards/Baseball,Football,Basketball/*,s/{encoded}"
         r = httpx.get(url, headers=_HEADERS, timeout=15, follow_redirects=True)
         r.raise_for_status()
-        # COMC uses imgix CDN: https://img.comc.com/...
-        pattern = re.compile(r'https://img\.comc\.com/[^"\'>\s]+\.(?:jpg|jpeg|png|webp)', re.IGNORECASE)
-        matches = pattern.findall(r.text)
-        if matches:
-            console.print(f"[dim]  COMC image found: {matches[0][:80]}[/dim]")
-            return matches[0]
+        return r.text
     except Exception as e:
-        console.print(f"[yellow]  COMC scrape failed: {e}[/yellow]")
-    return None
+        console.print(f"[yellow]  Fetch failed ({url[:60]}...): {e}[/yellow]")
+        return None
 
 
-def _ai_image_fallback(card: CardInfo, client: openai.OpenAI) -> str | None:
-    """Last resort: use OpenAI web search to find any direct image URL."""
+def _extract_any_image(html: str) -> str | None:
+    """Try every extraction method on a page's HTML."""
+    return (
+        _extract_og_image(html)
+        or _extract_data_src(html)
+        or _extract_json_images(html)
+    )
+
+
+# ── Source 1: AI finds a specific eBay listing URL, we fetch + extract ──────
+
+def _ai_find_ebay_listing_url(card: CardInfo, client: openai.OpenAI) -> str | None:
+    """Ask AI to find a real eBay listing URL (not an image URL)."""
+    base = f"{card.player_name} {card.card_set} #{card.card_number}"
+    if card.parallel and card.parallel.lower() not in ("base", ""):
+        base += f" {card.parallel}"
+
     try:
-        base = f"{card.player_name} {card.card_set} #{card.card_number}"
-        if card.parallel:
-            base += f" {card.parallel}"
-
         response = client.responses.create(
             model="gpt-4o",
             instructions=(
-                "Search eBay, Google Images, COMC, and Beckett for a real photo of this exact sports card. "
-                "Return ONLY a single direct image URL (must end in .jpg, .jpeg, .png, or .webp and must be "
-                "from a CDN like i.ebayimg.com, img.comc.com, or similar). "
-                "Do NOT return a page URL or a URL without an image file extension. "
-                "If you cannot find a direct image URL, return exactly: NO_IMAGE_FOUND"
+                "Search eBay for a listing of this exact sports card. "
+                "Return ONLY the full eBay listing URL (https://www.ebay.com/itm/DIGITS). "
+                "No explanation. No markdown. Just the URL."
             ),
-            input=f"Find a direct image URL for: {base}",
+            input=f"Find an eBay listing for: {base}",
             tools=[{"type": "web_search_preview"}],
         )
-        url = response.output_text.strip().split("\n")[0].strip()
-        # Strip markdown formatting if present
-        url = re.sub(r'^[`\[\(]|[`\]\)]$', '', url).strip()
-
-        if url and url != "NO_IMAGE_FOUND" and url.startswith("http"):
-            # Accept only URLs that look like direct image files
-            if re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', url, re.IGNORECASE):
-                console.print(f"[dim]  AI fallback image: {url[:80]}[/dim]")
-                return url
+        text = response.output_text.strip()
+        m = re.search(r'https?://(?:www\.)?ebay\.com/itm/\d+', text)
+        if m:
+            return m.group(0)
     except Exception as e:
-        console.print(f"[yellow]  AI fallback failed: {e}[/yellow]")
+        console.print(f"[yellow]  AI eBay listing search failed: {e}[/yellow]")
     return None
 
 
-def _build_queries(card: CardInfo) -> list[str]:
-    """Build progressively simpler search queries for the card."""
+def _via_ebay_listing(card: CardInfo, client: openai.OpenAI) -> str | None:
+    """Find eBay listing URL via AI, then scrape the listing page for its og:image."""
+    console.print("[dim]  Strategy 1: AI → eBay listing URL → og:image[/dim]")
+    listing_url = _ai_find_ebay_listing_url(card, client)
+    if not listing_url:
+        return None
+    console.print(f"[dim]  Fetching listing: {listing_url}[/dim]")
+    html = _fetch_page(listing_url)
+    if not html:
+        return None
+    return _extract_any_image(html)
+
+
+# ── Source 2: eBay search results page ──────────────────────────────────────
+
+def _via_ebay_search(query: str) -> str | None:
+    """Scrape eBay search results page for any card image."""
+    encoded = urllib.parse.quote(query)
+    for suffix in ["&LH_Sold=0", "&LH_Sold=1&LH_Complete=1"]:
+        url = f"https://www.ebay.com/sch/i.html?_nkw={encoded}&_sacat=212{suffix}"
+        console.print(f"[dim]  Strategy 2: eBay search ({url[:70]}...)[/dim]")
+        html = _fetch_page(url)
+        if html:
+            img = _extract_any_image(html)
+            if img:
+                return img
+    return None
+
+
+# ── Source 3: 130point.com ───────────────────────────────────────────────────
+
+def _via_130point(query: str) -> str | None:
+    encoded = urllib.parse.quote(query)
+    url = f"https://130point.com/sales/?search={encoded}"
+    console.print(f"[dim]  Strategy 3: 130point ({url[:70]}...)[/dim]")
+    html = _fetch_page(url)
+    if html:
+        return _extract_any_image(html)
+    return None
+
+
+# ── Source 4: COMC ───────────────────────────────────────────────────────────
+
+def _via_comc(query: str) -> str | None:
+    encoded = urllib.parse.quote(query)
+    url = f"https://www.comc.com/Cards/*,s/{encoded}"
+    console.print(f"[dim]  Strategy 4: COMC ({url[:70]}...)[/dim]")
+    html = _fetch_page(url)
+    if not html:
+        return None
+    pat = re.compile(r'https://img\.comc\.com/[^"\'>\s]+\.(?:jpg|jpeg|png|webp)', re.IGNORECASE)
+    m = pat.search(html)
+    if m:
+        return m.group(0)
+    return _extract_og_image(html)
+
+
+# ── Source 5: PSA card database ──────────────────────────────────────────────
+
+def _via_psa(query: str) -> str | None:
+    encoded = urllib.parse.quote(query)
+    url = f"https://www.psacard.com/cardfacts/search?q={encoded}"
+    console.print(f"[dim]  Strategy 5: PSA ({url[:70]}...)[/dim]")
+    html = _fetch_page(url)
+    if html:
+        return _extract_og_image(html)
+    return None
+
+
+# ── Source 6: AI direct image URL search (last resort) ──────────────────────
+
+def _via_ai_direct(card: CardInfo, client: openai.OpenAI) -> str | None:
+    """Last resort: ask AI to find a direct image URL ending in .jpg/.png/.webp."""
     base = f"{card.player_name} {card.card_set} #{card.card_number}"
-    queries = [base]
-    if card.parallel:
-        queries.insert(0, f"{base} {card.parallel}")
-    if card.is_graded and card.grade:
-        queries.insert(0, f"{base} {card.parallel or ''} {card.grade}".strip())
-    # Simplest fallback: just player + set
+    if card.parallel and card.parallel.lower() not in ("base", ""):
+        base += f" {card.parallel}"
+
+    try:
+        response = client.responses.create(
+            model="gpt-4o",
+            instructions=(
+                "Search eBay, Google Images, Heritage Auctions, COMC, and Beckett for a photo of this sports card. "
+                "Return ONLY a direct image file URL that ends in .jpg, .jpeg, .png, or .webp. "
+                "It must be from a public CDN — not a page URL. "
+                "No explanation. No markdown. Just the raw URL."
+            ),
+            input=f"Find a direct card image URL for: {base}",
+            tools=[{"type": "web_search_preview"}],
+        )
+        text = response.output_text.strip().split("\n")[0]
+        text = re.sub(r'[`\[\]()]', '', text).strip()
+        if text.startswith("http") and re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', text, re.IGNORECASE):
+            return text
+    except Exception as e:
+        console.print(f"[yellow]  AI direct image search failed: {e}[/yellow]")
+    return None
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
+
+def _card_queries(card: CardInfo) -> list[str]:
+    base = f"{card.player_name} {card.card_set} #{card.card_number}"
+    queries = []
+    if card.parallel and card.parallel.lower() not in ("base", ""):
+        queries.append(f"{base} {card.parallel}")
+    queries.append(base)
     queries.append(f"{card.player_name} {card.card_set}")
     return queries
 
 
 def search_card_image(card: CardInfo, client: openai.OpenAI) -> str | None:
     """
-    Find a card image using a waterfall of direct HTTP scrapers, falling back to AI search.
-    Order: eBay active → eBay sold → 130point → COMC → AI web search
+    Waterfall image search across 6 strategies.
+    Returns first valid image URL found, or None.
     """
     console.print("[bold blue]🖼  Searching for card image...[/bold blue]")
 
-    queries = _build_queries(card)
+    queries = _card_queries(card)
 
-    # Try each scraper against the most specific query first, then broader ones
+    # Strategy 1: AI finds eBay listing URL → fetch page → og:image
+    url = _via_ebay_listing(card, client)
+    if url:
+        console.print("[green]✓ Image found via eBay listing[/green]")
+        return url
+
+    # Strategies 2–5: direct HTTP scrapes with multiple query variants
     scrapers = [
-        ("eBay active", _scrape_ebay),
-        ("eBay sold",   _scrape_ebay_sold),
-        ("130point",    _scrape_130point),
-        ("COMC",        _scrape_comc),
+        ("eBay search",  _via_ebay_search),
+        ("130point",     _via_130point),
+        ("COMC",         _via_comc),
+        ("PSA",          _via_psa),
     ]
-
-    for scraper_name, scraper_fn in scrapers:
-        for query in queries:
-            console.print(f"[dim]  Trying {scraper_name}: {query[:60]}...[/dim]")
-            url = scraper_fn(query)
+    for name, fn in scrapers:
+        for q in queries:
+            url = fn(q)
             if url:
-                console.print(f"[green]✓ Image found via {scraper_name}[/green]")
+                console.print(f"[green]✓ Image found via {name}[/green]")
                 return url
 
-    # Final fallback: AI-assisted search
-    console.print("[dim]  Trying AI web search fallback...[/dim]")
-    url = _ai_image_fallback(card, client)
+    # Strategy 6: AI direct image URL search
+    url = _via_ai_direct(card, client)
     if url:
-        console.print("[green]✓ Image found via AI fallback[/green]")
+        console.print("[green]✓ Image found via AI direct search[/green]")
         return url
 
     console.print("[yellow]⚠ No card image found[/yellow]")
