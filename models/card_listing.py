@@ -75,6 +75,25 @@ class CardInfo(BaseModel):
     extra_notes: Optional[str] = Field(default=None, description="Any other relevant details the seller wants to include")
 
 
+class SaleRecord(BaseModel):
+    sale_date: str = Field(description="Date of sale (e.g. 'May 2, 2026' or 'Apr 2026')")
+    price: float = Field(description="Sale price in USD")
+    condition: str = Field(description="Card condition or grade at time of sale")
+    platform: str = Field(description="Platform where sold (e.g. eBay, COMC, Whatnot)")
+    details: str = Field(description="Any additional context — parallel match, serial, graded vs raw, etc.")
+
+
+class MarketSalesReport(BaseModel):
+    sales: list[SaleRecord] = Field(description="Recent comparable sales found, most recent first")
+    avg_price: float = Field(description="Average sale price across all found comps")
+    low_price: float = Field(description="Lowest recent sale price")
+    high_price: float = Field(description="Highest recent sale price")
+    price_trend: str = Field(description="Overall trend: 'Rising', 'Stable', or 'Falling'")
+    market_summary: str = Field(description="2-3 sentence summary of market conditions for this card")
+    pricing_verdict: str = Field(description="Specific critique of whether the proposed listing price is accurate, too high, or too low given the comps")
+    data_quality: str = Field(description="'High' if 5+ confirmed comps found, 'Medium' if 2-4, 'Low' if fewer than 2")
+
+
 class AuthenticationReport(BaseModel):
     confirmed_player: str = Field(description="Confirmed full player name")
     confirmed_set: str = Field(description="Confirmed full set name including year")

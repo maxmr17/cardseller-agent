@@ -69,22 +69,29 @@ def validate_and_refine(
     card: CardInfo,
     draft_listing: CardListing,
     client: openai.OpenAI,
+    market_context: str = "",
+    price_verdict: str = "",
 ) -> ValidatedListing:
     """Run the validator agent to critique and refine a draft listing."""
     console.print("\n[bold yellow]🔍 Validator Agent running...[/bold yellow]")
 
     listing_text = _listing_to_text(draft_listing)
 
-    user_message = f"""Review and refine this eBay sports card listing. Be rigorous — your job is to make it significantly better.
+    market_section = f"\n\nRECENT MARKET DATA:\n{market_context}" if market_context else ""
+    price_section = f"\n\nPRICE VALIDATION VERDICT:\n{price_verdict}" if price_verdict else ""
+
+    user_message = f"""Review and refine this eBay sports card listing. Your standard is perfection — a 10/10 listing that no competitor can beat.
 
 CARD BEING LISTED:
 Player: {card.player_name} | Set: {card.card_set} | Card #: {card.card_number}
-Sport: {card.sport} | Rookie: {card.is_rookie_card} | Auto: {card.is_autographed} | Graded: {card.is_graded}{f' ({card.grade})' if card.grade else ''}{f' | Serial: {card.serial_number}' if card.serial_number else ''}
+Sport: {card.sport} | Rookie: {card.is_rookie_card} | Auto: {card.is_autographed} | Graded: {card.is_graded}{f' ({card.grade})' if card.grade else ''}{f' | Serial: {card.serial_number}' if card.serial_number else ''}{market_section}{price_section}
 
 DRAFT LISTING TO REVIEW:
 {listing_text}
 
-Scrutinize every element. Then produce a refined listing that maximizes buyer interest and final sale price. Include specific market insight about what collectors of this card care about."""
+Scrutinize every single element — title keywords, character count, pricing accuracy vs comps, description style, item specifics completeness. Fix everything that is not perfect.
+
+Your confidence_score must reflect honest assessment. Only assign 10/10 if this listing would genuinely outperform 95%+ of comparable eBay listings right now. If pricing is off, fix it to match the comps."""
 
     response = client.beta.chat.completions.parse(
         model="gpt-4o",

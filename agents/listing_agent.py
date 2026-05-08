@@ -54,17 +54,24 @@ def _build_card_prompt(card: CardInfo) -> str:
     return "\n".join(lines)
 
 
-def generate_listing(card: CardInfo, client: openai.OpenAI) -> CardListing:
+def generate_listing(card: CardInfo, client: openai.OpenAI, market_context: str = "") -> CardListing:
     """Run the listing agent to generate an eBay listing for a sports card."""
     console.print("\n[bold cyan]⚡ Listing Agent running...[/bold cyan]")
 
     card_details = _build_card_prompt(card)
 
+    market_section = f"\n\nRECENT MARKET DATA:\n{market_context}" if market_context else ""
+
     user_message = f"""Generate a complete, optimized eBay listing for this sports card:
 
-{card_details}
+{card_details}{market_section}
 
-Produce a listing that will attract serious collectors and investors. Be specific about pricing — provide real dollar amounts based on your market knowledge for cards like this."""
+Take your time and think carefully before producing output. Your goal is a perfect 10/10 listing.
+- Title: pack every searchable keyword, stay under 80 chars, lead with the player
+- Pricing: use the market data above to set a price that is accurate to current comps, not just an estimate
+- Description: concise, factual, match the maxmr17 style exactly
+- Item specifics: fill every relevant eBay field
+- Do not submit until you are confident this listing will outperform 95% of comparable listings on eBay right now."""
 
     response = client.beta.chat.completions.parse(
         model="gpt-4o",

@@ -4,13 +4,21 @@ Run with:  streamlit run app.py
 """
 
 import os
-from pathlib import Path
 
 import openai
 import streamlit as st
 from dotenv import load_dotenv
 
-from agents import generate_listing, validate_and_refine, parse_card_text, research_card, authenticate_card
+from agents import (
+    generate_listing,
+    validate_and_refine,
+    parse_card_text,
+    research_card,
+    search_card_image,
+    authenticate_card,
+    fetch_market_sales,
+    validate_listing_price,
+)
 from models import CardInfo
 
 load_dotenv()
@@ -26,26 +34,18 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------------
-# Styling
-# ---------------------------------------------------------------------------
-
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; }
-    .stAlert { border-radius: 8px; }
-    div[data-testid="metric-container"] { background: #f8f9fa; border-radius: 8px; padding: 12px; }
-    .listing-box { background: #f8f9fa; border-radius: 8px; padding: 1.2rem; border-left: 4px solid #dee2e6; margin-bottom: 1rem; }
-    .listing-box-refined { border-left: 4px solid #28a745; }
-    .listing-box-draft { border-left: 4px solid #6c757d; }
-    .keyword-chip { display: inline-block; background: #e9ecef; border-radius: 20px; padding: 3px 10px; margin: 2px; font-size: 0.82rem; }
-    .auth-card { border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
-    h3 { margin-top: 0 !important; }
+    .keyword-chip {
+        display: inline-block; background: #e9ecef; border-radius: 20px;
+        padding: 3px 10px; margin: 2px; font-size: 0.82rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Client
 # ---------------------------------------------------------------------------
 
 @st.cache_resource
@@ -71,26 +71,36 @@ def demo_card() -> CardInfo:
         extra_notes=None,
     )
 
+# ---------------------------------------------------------------------------
+# Render helpers
+# ---------------------------------------------------------------------------
 
-def render_auth_panel(card: CardInfo, report) -> None:
-    """Render the card identification and authentication panel."""
+def render_auth_panel(card: CardInfo, report, image_url: str | None) -> None:
     score = report.confidence_score
     is_auth = report.is_authentic
-
     verdict_color = "#28a745" if (is_auth and score >= 8) else "#ffc107" if score >= 6 else "#dc3545"
     verdict_icon = "✅" if (is_auth and score >= 8) else "⚠️" if score >= 6 else "❌"
     verdict_text = "Authenticated" if is_auth else "Could Not Authenticate"
 
     st.markdown("### 🔐 Card Identity & Authentication")
 
-    col_id, col_auth = st.columns([3, 2])
+    img_col, id_col, auth_col = st.columns([1, 2, 1])
 
-    with col_id:
+    with img_col:
+        if image_url:
+            try:
+                st.image(image_url, caption=f"{card.player_name} — {card.card_set}", use_container_width=True)
+            except Exception:
+                st.caption("Image unavailable")
+        else:
+            st.caption("No image found")
+
+    with id_col:
         st.markdown("**Confirmed Card Details**")
         details = {
             "Player": report.confirmed_player,
             "Set": report.confirmed_set,
-            "Card Number": report.confirmed_card_number,
+            "Card #": report.confirmed_card_number,
             "Sport": report.confirmed_sport,
             "Parallel": report.confirmed_parallel or "Base",
             "Serial": report.confirmed_serial or "Not numbered",
@@ -104,12 +114,12 @@ def render_auth_panel(card: CardInfo, report) -> None:
         )
         st.markdown(f"<table style='font-size:0.9rem'>{rows}</table>", unsafe_allow_html=True)
 
-    with col_auth:
+    with auth_col:
         st.markdown(
             f"<div style='text-align:center;padding:1rem;background:#f8f9fa;border-radius:10px;"
             f"border:2px solid {verdict_color}'>"
             f"<div style='font-size:2rem'>{verdict_icon}</div>"
-            f"<div style='font-size:1.1rem;font-weight:700;color:{verdict_color}'>{verdict_text}</div>"
+            f"<div style='font-size:1rem;font-weight:700;color:{verdict_color}'>{verdict_text}</div>"
             f"<div style='font-size:1.8rem;font-weight:800;color:{verdict_color}'>{score}/10</div>"
             f"<div style='font-size:0.75rem;color:#666'>confidence</div>"
             f"</div>",
@@ -119,22 +129,18 @@ def render_auth_panel(card: CardInfo, report) -> None:
     if report.red_flags:
         st.warning("**Red flags:** " + " · ".join(report.red_flags))
 
-    with st.expander("Authentication details", expanded=False):
+    with st.expander("Authentication details & sources", expanded=False):
         st.write(report.authentication_notes)
         if report.sources_consulted:
             st.caption("Sources: " + ", ".join(report.sources_consulted))
 
-    st.divider()
-
 
 def render_listing(listing, label: str, is_refined: bool = False) -> None:
-    box_class = "listing-box-refined" if is_refined else "listing-box-draft"
     pricing = listing.pricing
     strategy = pricing.strategy.value.replace("_", " ").title()
 
     title_len = len(listing.title)
-    title_color = "#28a745" if title_len <= 80 else "#dc3545"
-    title_badge = f'<span style="color:{title_color};font-size:0.8rem;font-weight:600;">{title_len}/80</span>'
+    title_color = "green" if title_len <= 80 else "red"
 
     price_parts = [f"**Strategy:** {strategy}"]
     if pricing.starting_price:
@@ -146,7 +152,6 @@ def render_listing(listing, label: str, is_refined: bool = False) -> None:
     keywords_html = " ".join(
         f'<span class="keyword-chip">{kw}</span>' for kw in listing.search_keywords
     )
-
     specifics_rows = "".join(
         f"<tr><td style='padding:3px 10px 3px 0;font-weight:600;white-space:nowrap'>{s.key}</td>"
         f"<td style='padding:3px 0'>{s.value}</td></tr>"
@@ -154,14 +159,12 @@ def render_listing(listing, label: str, is_refined: bool = False) -> None:
     )
 
     st.markdown(f"#### {label}")
-    st.markdown(f"<div class='listing-box {box_class}'>", unsafe_allow_html=True)
 
     c1, c2 = st.columns([3, 2])
     with c1:
-        st.markdown(f"**Title** {title_badge}", unsafe_allow_html=True)
+        st.markdown(f"**Title** :{title_color}[{title_len}/80]")
         st.markdown(f"> {listing.title}")
         st.markdown(f"**Subtitle:** {listing.subtitle}")
-
     with c2:
         st.markdown("**Pricing**")
         for p in price_parts:
@@ -174,20 +177,55 @@ def render_listing(listing, label: str, is_refined: bool = False) -> None:
     with col_l:
         with st.expander("📄 Description", expanded=True):
             st.text(listing.description)
-
     with col_r:
         st.markdown("**Condition**")
         st.markdown(f"Grade: `{listing.condition_grade}`")
         st.caption(listing.condition_description)
         st.markdown("**Item Specifics**")
-        st.markdown(
-            f"<table style='font-size:0.85rem'>{specifics_rows}</table>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<table style='font-size:0.85rem'>{specifics_rows}</table>", unsafe_allow_html=True)
 
     st.markdown("**Search Keywords**")
     st.markdown(keywords_html, unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_market_tab(market_report, price_verdict: str) -> None:
+    if market_report is None:
+        st.info("Market data not available for this card.")
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Avg Sale Price", f"${market_report.avg_price:,.2f}")
+    col2.metric("Low", f"${market_report.low_price:,.2f}")
+    col3.metric("High", f"${market_report.high_price:,.2f}")
+    trend_icon = "📈" if market_report.price_trend == "Rising" else "📉" if market_report.price_trend == "Falling" else "➡️"
+    col4.metric("Trend", f"{trend_icon} {market_report.price_trend}")
+
+    st.markdown(f"**Data quality:** `{market_report.data_quality}`")
+    st.caption(market_report.market_summary)
+
+    st.divider()
+    st.markdown("#### Recent Comparable Sales")
+
+    if market_report.sales:
+        import pandas as pd
+        rows = [
+            {
+                "Date": s.sale_date,
+                "Price": f"${s.price:,.2f}",
+                "Condition": s.condition,
+                "Platform": s.platform,
+                "Notes": s.details,
+            }
+            for s in market_report.sales
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.warning("No comparable sales found.")
+
+    if price_verdict:
+        st.divider()
+        st.markdown("#### 💰 Price Validation Verdict")
+        st.warning(price_verdict)
 
 
 def build_text_output(validated, card: CardInfo) -> str:
@@ -237,9 +275,8 @@ def build_text_output(validated, card: CardInfo) -> str:
     ]
     return "\n".join(lines)
 
-
 # ---------------------------------------------------------------------------
-# Sidebar — card input form
+# Sidebar
 # ---------------------------------------------------------------------------
 
 def render_sidebar() -> CardInfo | str | None:
@@ -263,9 +300,6 @@ def render_sidebar() -> CardInfo | str | None:
     )
     st.session_state["input_mode"] = mode
 
-    # ------------------------------------------------------------------
-    # Quick entry — single free-text field, web-researched by the AI
-    # ------------------------------------------------------------------
     if mode == "Quick entry":
         quick_text = st.sidebar.text_area(
             "Card description",
@@ -276,9 +310,7 @@ def render_sidebar() -> CardInfo | str | None:
         st.sidebar.caption("The AI will search the web to confirm every detail before generating the listing.")
         st.sidebar.divider()
         generate = st.sidebar.button(
-            "⚡ Generate Listing",
-            use_container_width=True,
-            type="primary",
+            "⚡ Generate Listing", use_container_width=True, type="primary",
             disabled=not quick_text.strip(),
         )
         if not generate:
@@ -286,9 +318,6 @@ def render_sidebar() -> CardInfo | str | None:
         st.session_state["quick_text"] = quick_text
         return quick_text.strip()
 
-    # ------------------------------------------------------------------
-    # Manual entry — full structured form
-    # ------------------------------------------------------------------
     def _get(key, default=""):
         return st.session_state.get(f"field_{key}", default)
 
@@ -296,58 +325,39 @@ def render_sidebar() -> CardInfo | str | None:
     card_set = st.sidebar.text_input("Card set *", value=_get("card_set"), placeholder="e.g. 2023 Panini Prizm Football")
     card_number = st.sidebar.text_input("Card number *", value=_get("card_number"), placeholder="e.g. #/99, BASE, #123")
     sport = st.sidebar.selectbox(
-        "Sport",
-        ["Football", "Basketball", "Baseball", "UFC", "Soccer", "Hockey"],
+        "Sport", ["Football", "Basketball", "Baseball", "UFC", "Soccer", "Hockey"],
         index=["Football", "Basketball", "Baseball", "UFC", "Soccer", "Hockey"].index(_get("sport") or "Football"),
     )
-
     st.sidebar.divider()
     st.sidebar.markdown("**Card attributes**")
     is_rookie = st.sidebar.checkbox("Rookie card (RC)", value=bool(_get("is_rookie_card")))
     is_auto = st.sidebar.checkbox("Autographed", value=bool(_get("is_autographed")))
     is_graded = st.sidebar.checkbox("Professionally graded", value=bool(_get("is_graded")))
-
     grade = None
     if is_graded:
         grade = st.sidebar.text_input("Grade", value=_get("grade") or "", placeholder="e.g. PSA 10, BGS 9.5")
-
     st.sidebar.divider()
     st.sidebar.markdown("**Optional details**")
     serial = st.sidebar.text_input("Serial number", value=_get("serial_number") or "", placeholder="e.g. /99, /10, 1/1") or None
     parallel = st.sidebar.text_input("Parallel / variant", value=_get("parallel") or "", placeholder="e.g. Silver Prizm, Gold Refractor") or None
-    condition = st.sidebar.text_area("Condition notes", value=_get("condition") or "", placeholder="e.g. Near mint, sharp corners, no creases", height=80) or None
+    condition = st.sidebar.text_area("Condition notes", value=_get("condition") or "", placeholder="e.g. Near mint, sharp corners", height=80) or None
     extra_notes = st.sidebar.text_area("Extra notes", value=_get("extra_notes") or "", placeholder="Anything else buyers should know", height=60) or None
-
     st.sidebar.divider()
     generate = st.sidebar.button(
-        "⚡ Generate Listing",
-        use_container_width=True,
-        type="primary",
+        "⚡ Generate Listing", use_container_width=True, type="primary",
         disabled=not (player_name and card_set and card_number),
     )
-
     if not generate:
         return None
-
     if not player_name or not card_set or not card_number:
         st.sidebar.error("Player name, card set, and card number are required.")
         return None
-
     return CardInfo(
-        player_name=player_name,
-        card_number=card_number,
-        card_set=card_set,
-        sport=sport,
-        is_rookie_card=is_rookie,
-        is_autographed=is_auto,
-        is_graded=is_graded,
-        grade=grade if is_graded else None,
-        serial_number=serial,
-        parallel=parallel,
-        condition=condition,
-        extra_notes=extra_notes,
+        player_name=player_name, card_number=card_number, card_set=card_set,
+        sport=sport, is_rookie_card=is_rookie, is_autographed=is_auto,
+        is_graded=is_graded, grade=grade if is_graded else None,
+        serial_number=serial, parallel=parallel, condition=condition, extra_notes=extra_notes,
     )
-
 
 # ---------------------------------------------------------------------------
 # Main
@@ -364,72 +374,116 @@ def main() -> None:
 
     raw = render_sidebar()
 
-    # Show landing state
-    if "result" not in st.session_state and "auth_report" not in st.session_state and raw is None:
+    # Landing state
+    if not any(k in st.session_state for k in ("auth_report", "result")) and raw is None:
         st.markdown("### How it works")
         col1, col2, col3, col4 = st.columns(4)
         col1.info("**1. Describe your card**\nQuick free-text or detailed manual form.")
-        col2.info("**2. Web research**\nAI searches the web to confirm every card detail.")
-        col3.info("**3. PSA authentication**\nExpert-level identity verification with confidence score.")
-        col4.info("**4. Listing generated**\nDraft written, then refined by a validator agent.")
+        col2.info("**2. Web research + auth**\nAI confirms every detail and authenticates card identity.")
+        col3.info("**3. You confirm the card**\nReview the identified card before any listing is generated.")
+        col4.info("**4. Listing generated**\nMarket-data-backed draft, then refined to perfection.")
         return
 
-    # Run pipeline when submitted
+    # ── Phase 1: Research + Auth (triggered by form submit) ──────────────────
     if raw is not None:
-        # Clear previous results
-        for key in ("result", "result_card", "auth_report"):
+        for key in ("auth_report", "result_card", "result", "card_confirmed",
+                    "market_report", "price_verdict", "card_image_url"):
             st.session_state.pop(key, None)
 
-        # Placeholders — auth panel renders first, listing panel renders after
-        auth_placeholder = st.empty()
-        listing_placeholder = st.empty()
+        with st.status("🔎 Researching card details…", expanded=True) as s:
+            query = raw if isinstance(raw, str) else (
+                f"{raw.player_name} {raw.card_set} #{raw.card_number}"
+                + (f" {raw.parallel}" if raw.parallel else "")
+            )
+            st.write("Searching the web to confirm card identity…")
+            card, research_summary = research_card(query, client)
 
-        try:
-            # ── Phase 1: Research + Authentication ──────────────────────────
-            with auth_placeholder.status("🔎 Researching card details…", expanded=True) as auth_status:
-                if isinstance(raw, str):
-                    st.write("Searching the web to confirm card identity…")
-                    card, research_summary = research_card(raw, client)
-                else:
-                    card = raw
-                    query = f"{card.player_name} {card.card_set} #{card.card_number}"
-                    st.write("Searching the web to confirm card identity…")
-                    card, research_summary = research_card(query, client)
+            st.write("Searching for card image…")
+            image_url = search_card_image(card, client)
 
-                auth_status.update(label="🔐 Authenticating card identity…", state="running")
-                st.write("Running PSA-style authentication checks…")
-                auth_report = authenticate_card(card, research_summary, client)
-                auth_status.update(label="✅ Card identified and authenticated", state="complete")
+            s.update(label="🔐 Authenticating card identity…", state="running")
+            st.write("Running PSA-style authentication checks…")
+            auth_report = authenticate_card(card, research_summary, client)
+            s.update(label="✅ Card identified — please confirm below", state="complete")
 
-            # Render auth panel immediately — before listing is generated
-            with auth_placeholder.container():
-                render_auth_panel(card, auth_report)
-            st.session_state["auth_report"] = auth_report
-            st.session_state["result_card"] = card
+        st.session_state["auth_report"] = auth_report
+        st.session_state["result_card"] = card
+        st.session_state["card_image_url"] = image_url
+        st.rerun()
 
-            # ── Phase 2: Listing Generation + Validation ─────────────────────
-            with listing_placeholder.status("⚡ Generating listing…", expanded=True) as listing_status:
-                st.write("Analyzing market conditions and crafting draft…")
-                draft = generate_listing(card, client)
-                listing_status.update(label="🔍 Validator refining listing…", state="running")
-                st.write("Critiquing title, pricing, description, and item specifics…")
-                validated = validate_and_refine(card, draft, client)
-                listing_status.update(label="✅ Listing ready", state="complete")
+    # ── Show auth panel + confirmation gate ──────────────────────────────────
+    if "auth_report" in st.session_state and "result" not in st.session_state:
+        render_auth_panel(
+            st.session_state["result_card"],
+            st.session_state["auth_report"],
+            st.session_state.get("card_image_url"),
+        )
 
-            listing_placeholder.empty()
-            st.session_state["result"] = validated
+        if not st.session_state.get("card_confirmed"):
+            st.markdown("#### Is this the card you're listing?")
+            col_yes, col_no = st.columns(2)
+            if col_yes.button("✅ Yes — generate listing", use_container_width=True, type="primary"):
+                st.session_state["card_confirmed"] = True
+                st.rerun()
+            if col_no.button("❌ No — start over", use_container_width=True):
+                for key in ("auth_report", "result_card", "card_confirmed",
+                            "market_report", "price_verdict", "card_image_url"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+            st.stop()
 
-        except Exception as exc:
-            auth_placeholder.empty()
-            listing_placeholder.empty()
-            st.error(f"Something went wrong: {exc}")
-            return
+    # ── Phase 2: Market data + listing (after user confirms) ─────────────────
+    if st.session_state.get("card_confirmed") and "result" not in st.session_state:
+        card = st.session_state["result_card"]
 
+        with st.status("📊 Fetching market data…", expanded=True) as s:
+            st.write("Searching eBay sold, SportscardsPro, SportscardsInvestor…")
+            try:
+                market_report = fetch_market_sales(card, client)
+                market_context = (
+                    f"Recent sales avg: ${market_report.avg_price:.2f} | "
+                    f"Range: ${market_report.low_price:.2f}–${market_report.high_price:.2f} | "
+                    f"Trend: {market_report.price_trend}\n"
+                    + "\n".join(
+                        f"- {s.sale_date}: ${s.price:.2f} ({s.condition}) on {s.platform}"
+                        for s in market_report.sales[:5]
+                    )
+                )
+            except Exception:
+                market_report = None
+                market_context = ""
+
+            s.update(label="⚡ Generating listing…", state="running")
+            st.write("Crafting optimised draft with market data…")
+            draft = generate_listing(card, client, market_context=market_context)
+
+            if market_report:
+                price_verdict = validate_listing_price(card, draft, market_report, client)
+            else:
+                price_verdict = ""
+
+            s.update(label="🔍 Validator refining to perfection…", state="running")
+            st.write("Scrutinising every element — aiming for 10/10…")
+            validated = validate_and_refine(
+                card, draft, client,
+                market_context=market_context,
+                price_verdict=price_verdict,
+            )
+            s.update(label="✅ Listing ready", state="complete")
+
+        st.session_state["result"] = validated
+        st.session_state["market_report"] = market_report
+        st.session_state["price_verdict"] = price_verdict
         st.rerun()
 
     # ── Display persisted results ─────────────────────────────────────────────
     if "auth_report" in st.session_state:
-        render_auth_panel(st.session_state["result_card"], st.session_state["auth_report"])
+        render_auth_panel(
+            st.session_state["result_card"],
+            st.session_state["auth_report"],
+            st.session_state.get("card_image_url"),
+        )
+        st.divider()
 
     if "result" in st.session_state:
         validated = st.session_state["result"]
@@ -444,7 +498,9 @@ def main() -> None:
 
         st.divider()
 
-        tab_final, tab_draft, tab_insights = st.tabs(["✅ Final Listing", "📝 Draft", "📊 Market Insights"])
+        tab_final, tab_draft, tab_market, tab_insights = st.tabs([
+            "✅ Final Listing", "📝 Draft", "📊 Market Data", "💡 Insights"
+        ])
 
         with tab_final:
             render_listing(validated.refined_listing, "Refined Listing", is_refined=True)
@@ -459,6 +515,12 @@ def main() -> None:
 
         with tab_draft:
             render_listing(validated.original_listing, "Original Draft")
+
+        with tab_market:
+            render_market_tab(
+                st.session_state.get("market_report"),
+                st.session_state.get("price_verdict", ""),
+            )
 
         with tab_insights:
             col_a, col_b = st.columns(2)
