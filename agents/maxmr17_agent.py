@@ -56,7 +56,11 @@ Perfect for:
 • Color-focused collectors
 • Modern football hobbyists
 
-EXAMPLE KEYWORDS LINE (last line, no header):
+EXAMPLE SEPARATOR (must appear between "Perfect for:" block and keywords, with a blank line on each side):
+
+___________________________________________
+
+EXAMPLE KEYWORDS LINE (after the separator, no header):
 Shedeur Sanders Reactive Purple Mosaic | 2025 Panini Mosaic #302 | Shedeur Sanders rookie card | Shedeur Sanders Mosaic parallel | Reactive Purple rookie football card | Panini Mosaic rookie QB | modern football chrome rookie
 
 ━━━ YOUR REVIEW CRITERIA ━━━
@@ -69,7 +73,8 @@ You will REJECT (approved=false) and REWRITE if ANY of these are wrong:
 5. Condition line doesn't use "Fresh pull, immediately sleeved and top-loaded — ..." exactly
 6. Emoji fact block is incomplete, missing bold labels, or using wrong emojis
 7. "Perfect for:" section is missing or has wrong number of bullets
-8. Pipe-separated search keywords are missing from the end of the description
+8. The separator line  ___________________________________________  is missing between "Perfect for:" and the keywords
+9. Pipe-separated search keywords are missing after the separator
 9. Any emoji appears in the body paragraphs (sections 2–4) — emojis belong ONLY in title, hook, and fact block
 10. Pricing is wrong for this card type based on the market
 

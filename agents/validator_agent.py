@@ -22,7 +22,8 @@ DESCRIPTION must contain these 8 sections IN ORDER:
 5. CONDITION LINE — EXACTLY: "Fresh pull, immediately sleeved and top-loaded — [comma observations]." (For graded: "Flawless — professionally graded perfection")
 6. EMOJI FACT BLOCK — Every field, bold labels, correct emojis: 🏈/🏀/⚾/🥊 Player · [match] Parallel/Insert/Grade · 📦 Set · 🆔 Card # · ⭐ Designation (RC only) · 🏆 Grade (graded only) · ✨ Finish · 🧼 Condition
 7. PERFECT FOR — Header "Perfect for:" then exactly 4–5 bullets: [Player] collectors · [position] investors · [parallel/set] [chasers/builders] · [aesthetic] [fans] · Modern [sport] hobbyists
-8. SEARCH KEYWORDS — Pipe-separated, no header, 10–15 lowercase phrases, last line of description
+SEPARATOR — the line  ___________________________________________  must appear between Section 7 and Section 8, with a blank line on each side
+8. SEARCH KEYWORDS — Pipe-separated, no header, 10–15 lowercase phrases, after the separator
 
 ━━━ STYLE RULES TO ENFORCE ━━━
 • Bold: player name + card ID in Section 2, parallel/insert names, key selling phrases. Never entire sentences.
@@ -99,7 +100,8 @@ Check every section in order:
 6. Does the condition line use EXACTLY "Fresh pull, immediately sleeved and top-loaded — ..."?
 7. Is the emoji fact block complete with bold labels?
 8. Is "Perfect for:" present with 4–5 bullets?
-9. Are pipe-separated search keywords at the very end?
+9. Is the separator line  ___________________________________________  present between "Perfect for:" and the keywords?
+10. Are pipe-separated search keywords immediately after the separator?
 10. Is pricing accurate to the market comps provided?
 
 Rewrite anything that fails these checks. Only assign confidence_score 9–10 if every section is correct."""

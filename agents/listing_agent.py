@@ -64,8 +64,11 @@ Perfect for:
 • [Card aesthetic quality] [fans / collectors]
 • Modern [sport] hobbyists
 
-SECTION 8 — SEARCH KEYWORDS (last line, no header, pipe-separated)
-10–15 lowercase keyword phrases, separated by " | ". These go at the very end with no label.
+SEPARATOR — include this EXACT line between Section 7 and Section 8, with one blank line before and after:
+___________________________________________
+
+SECTION 8 — SEARCH KEYWORDS (after separator, no header, pipe-separated)
+10–15 lowercase keyword phrases, separated by " | ". These go immediately after the separator with no label.
 Example: Patrick Mahomes Silver Prizm RC | 2017 Panini Prizm #346 | Mahomes rookie card | ...
 
 ━━━ STYLE RULES ━━━
