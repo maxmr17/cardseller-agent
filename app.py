@@ -126,10 +126,9 @@ def get_client() -> openai.OpenAI | None:
 # ---------------------------------------------------------------------------
 
 def render_auth_panel(card: CardInfo, report) -> None:
-    score = report.confidence_score
     is_auth = report.is_authentic
-    verdict_color = "#28a745" if (is_auth and score >= 8) else "#ffc107" if score >= 6 else "#dc3545"
-    verdict_icon = "✅" if (is_auth and score >= 8) else "⚠️" if score >= 6 else "❌"
+    verdict_color = "#28a745" if is_auth else "#dc3545"
+    verdict_icon = "✅" if is_auth else "❌"
     verdict_text = "Authenticated" if is_auth else "Could Not Authenticate"
 
     st.markdown("### 🔐 Card Identity & Authentication")
@@ -159,10 +158,8 @@ def render_auth_panel(card: CardInfo, report) -> None:
         st.markdown(
             f"<div style='text-align:center;padding:1rem;background:#f8f9fa;border-radius:10px;"
             f"border:2px solid {verdict_color}'>"
-            f"<div style='font-size:2rem'>{verdict_icon}</div>"
+            f"<div style='font-size:2.5rem'>{verdict_icon}</div>"
             f"<div style='font-size:1rem;font-weight:700;color:{verdict_color}'>{verdict_text}</div>"
-            f"<div style='font-size:1.8rem;font-weight:800;color:{verdict_color}'>{score}/10</div>"
-            f"<div style='font-size:0.75rem;color:#666'>confidence</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -376,10 +373,10 @@ def render_sidebar() -> CardInfo | str | None:
         quick_text = st.sidebar.text_area(
             "Card description",
             value=st.session_state.get("quick_text", ""),
-            placeholder="e.g. Patrick Mahomes 2017 Panini Prizm Silver Prizm RC #15",
+            placeholder="e.g. Patrick Mahomes, 2017 Panini Prizm, Silver Prizm RC, #15",
             height=100,
         )
-        st.sidebar.caption("The AI will search the web to confirm every detail before generating the listing.")
+        st.sidebar.caption("Comma-separated or free text — the AI confirms every detail before generating.")
         st.sidebar.divider()
         generate = st.sidebar.button(
             "⚡ Generate Listing", use_container_width=True, type="primary",
@@ -388,7 +385,9 @@ def render_sidebar() -> CardInfo | str | None:
         if not generate:
             return None
         st.session_state["quick_text"] = quick_text
-        return quick_text.strip()
+        # Normalise comma-separated input into a space-joined query
+        normalised = " ".join(p.strip() for p in quick_text.split(",") if p.strip())
+        return normalised
 
     def _get(key, default=""):
         return st.session_state.get(f"field_{key}", default)
