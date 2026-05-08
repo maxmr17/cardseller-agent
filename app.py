@@ -91,9 +91,15 @@ def render_auth_panel(card: CardInfo, report, image_url: str | None) -> None:
             try:
                 st.image(image_url, caption=f"{card.player_name} — {card.card_set}", use_container_width=True)
             except Exception:
-                st.caption("Image unavailable")
+                # Fallback: show as a clickable link if Streamlit can't render it directly
+                st.markdown(f"[View card image]({image_url})", unsafe_allow_html=False)
         else:
-            st.caption("No image found")
+            st.markdown(
+                "<div style='height:160px;background:#f0f0f0;border-radius:8px;"
+                "display:flex;align-items:center;justify-content:center;"
+                "color:#aaa;font-size:0.85rem'>No image found</div>",
+                unsafe_allow_html=True,
+            )
 
     with id_col:
         st.markdown("**Confirmed Card Details**")
